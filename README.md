@@ -62,7 +62,6 @@ All model calls go through the backend, so API keys never reach the client.
 | LLM | Grok (tool calling + JSON schema outputs) |
 | Voice | Grok Voice (realtime WebSocket) |
 | Images | Grok Imagine |
-| Recap | Gemini |
 | Vision / OCR | Perceptron |
 | Messaging | Photon 2.0 (iMessage, SMS fallback) via a Node sidecar |
 | Data | Open Food Facts + USDA FoodData Central; seeded prices (40–60 items × 3 stores) |
@@ -92,7 +91,7 @@ cartwise/
 - Node 20+, Python 3.11+
 - Expo Go on your phone
 - A MongoDB Atlas cluster
-- API keys: xAI, Perceptron, Gemini, Photon
+- API keys: xAI, Perceptron, Photon
 
 ### Environment
 Create `backend/.env`:
@@ -103,7 +102,6 @@ XAI_API_KEY=
 GROK_MODEL=            # check the xAI console for the current model id
 GROK_VOICE_MODEL=grok-voice-latest
 PERCEPTRON_API_KEY=
-GEMINI_API_KEY=
 DEMO_MODE=false        # true = serve cached AI responses from fixtures/
 ```
 

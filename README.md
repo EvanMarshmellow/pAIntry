@@ -15,7 +15,7 @@
 | **Pantry capture** | Text or upload a receipt or fridge photo. Vision AI finds the items (and expiry dates), and you confirm them. |
 | **Smart shopping list** | Nutrition gaps become a budget-aware list, with prices compared across 3 stores. |
 | **Group cart** | In a roommate iMessage chat, Cartwise merges everyone's requests, removes duplicates, and splits the cost. |
-| **Money saved** | A ledger of swaps and rescued food, plus a weekly recap text. |
+| **Money saved** | A ledger of swaps and rescued food |
 
 ### Trust principles
 - **Code does the math, the LLM writes the words.** Verdicts, prices, savings, and splits are computed deterministically. Models only explain them.
@@ -47,7 +47,6 @@
                                        ├─ vision.py   Perceptron: receipt OCR, fridge detection
                                        ├─ voice.py    Grok Voice realtime session + tools
                                        ├─ imagine.py  Grok Imagine (pre-generated assets)
-                                       └─ recap.py    Gemini weekly recap
 ```
 
 All model calls go through the backend, so API keys never reach the client.
@@ -157,14 +156,3 @@ npm install && npx expo start
 | AI | Grok prompts and tools, Voice, Imagine, Perceptron |
 | Agent + Story | Photon agent, group cart, recap, Devpost, video, pitch |
 
----
-
-## Limitations
-
-- Store prices are **seeded sample data**, not live retailer prices.
-- Checkout and loyalty points are **mocked**. No real payments are made.
-- Nutrition guidance is general information, **not medical advice**.
-
-## Acknowledgments
-
-Open Food Facts · USDA FoodData Central · xAI · Perceptron · Photon · Google Gemini · MongoDB Atlas · DubHacks '26

@@ -6,7 +6,7 @@ load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI", "")
 DB_NAME = os.getenv("DB_NAME", "app")
 
-COLLECTIONS = ["users", "pantry_items", "products", "carts",
+COLLECTIONS = ["users", "households", "pantry_items", "products", "carts",
                "group_carts", "decisions", "savings_ledger"]
 
 client: AsyncIOMotorClient | None = None
@@ -23,8 +23,13 @@ async def connect():
     db = get_db()
     await db.products.create_index("barcode")
     await db.products.create_index("category")
+    await db.users.create_index("phone")
     await db.pantry_items.create_index("user_id")
     await db.pantry_items.create_index("expires_at")
+    await db.households.create_index("members")
+    await db.households.create_index("space_id")
+    await db.group_carts.create_index("space_id")
+    await db.group_carts.create_index("household_id")
     await db.decisions.create_index("user_id")
     await db.savings_ledger.create_index("user_id")
 

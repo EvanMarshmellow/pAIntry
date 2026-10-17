@@ -2,7 +2,9 @@
 import asyncio
 import os
 
-from app.engine import analyze
+from app.agent import CartContext, handle, is_grocery_intent, parse_add_queries
+from app.engine import (add_to_group_cart, analyze, cart_summary, empty_group_cart,
+                        pantry_name_match, resolve_product)
 from app.grok import DATA_SOURCES, Verdict, explain, postprocess
 
 
@@ -74,8 +76,82 @@ def test_postprocess_keeps_good_output():
 def test_postprocess_allergy_overrides():
     f = analyze(PB, MAYA, [], ALTS)
     r = postprocess(Verdict(verdict="Swap", headline="Swap it", reasons=[]), f)
-    assert r["verdict"] == "Skip" and r["better_alternative"] is None and r["savings"] == 0
-    assert any("peanuts" in x for x in r["reasons"])
+    assert r["verdict"] == "Skip" and any("peanuts" in x for x in r["reasons"])
+    if f["alternative"]:
+        assert r["better_alternative"]["name"] == f["alternative"]["name"]
+        assert r["savings"] == f["savings"]
+    else:
+        assert r["better_alternative"] is None and r["savings"] == 0
+
+
+MILK = prod("Whole Milk", "dairy_eggs", 8, {"Store A": 3.29, "Store B": 2.89})
+SKIM = prod("Skim Milk", "dairy_eggs", 8, {"Store B": 2.79})
+HUMMUS = prod("Hummus Classic", "snacks", 2, {"Store A": 3.99, "Store B": 3.49})
+TORTILLA = prod("Tortilla Chips", "snacks", 2, {"Store B": 2.99})
+CATALOG = [MILK, SKIM, HUMMUS, TORTILLA, BAR]
+PANTRY_MILK = [{"name": "Whole Milk"}]
+
+
+def test_resolve_unknown():
+    assert resolve_product("dragonfruit", CATALOG) is None
+    assert resolve_product("hummus", CATALOG)["name"] == "Hummus Classic"
+    assert resolve_product("chips", CATALOG)["name"] == "Tortilla Chips"
+
+
+def test_resolve_milk_prefers_pantry():
+    assert resolve_product("milk", CATALOG, PANTRY_MILK)["name"] == "Whole Milk"
+
+
+def test_pantry_name_match_ignores_category():
+    assert pantry_name_match(MILK, PANTRY_MILK) == "Whole Milk"
+    assert pantry_name_match(HUMMUS, PANTRY_MILK) is None
+    # category overlap must not count
+    eggs = prod("Large Eggs", "dairy_eggs", 6, {"Store B": 2.99})
+    assert pantry_name_match(eggs, PANTRY_MILK) is None
+
+
+def test_add_skips_pantry_milk():
+    cart, result = add_to_group_cart(empty_group_cart(), MILK, "maya", PANTRY_MILK)
+    assert result["action"] == "skipped" and result["pantry_name"] == "Whole Milk"
+    assert cart["items"] == [] and cart["skipped"][0]["name"] == "Whole Milk"
+
+
+def test_add_hummus_then_merge():
+    cart, result = add_to_group_cart(empty_group_cart(), HUMMUS, "alex", PANTRY_MILK)
+    assert result["action"] == "added" and result["price"] == 3.49 and result["store"] == "Store B"
+    cart, result = add_to_group_cart(cart, HUMMUS, "maya", PANTRY_MILK)
+    assert result["action"] == "merged" and result["requesters"] == ["alex", "maya"]
+    assert len(cart["items"]) == 1
+    s = cart_summary(cart)
+    assert s["total"] == 3.49 and s["count"] == 1
+
+
+def test_parse_add_queries():
+    assert parse_add_queries("we need hummus and chips") == ["hummus", "chips"]
+    assert parse_add_queries("add milk") == ["milk"]
+    assert is_grocery_intent("add milk") and not is_grocery_intent("lol see you at 8")
+
+
+def test_agent_fallback_skip_add_merge():
+    os.environ.pop("XAI_API_KEY", None)
+    names = {"maya": "Maya", "alex": "Alex"}
+    ctx = CartContext(CATALOG, PANTRY_MILK, empty_group_cart(), "maya", "Maya", names)
+    skip = asyncio.run(handle("add milk", ctx))
+    assert skip["source"] == "engine" and skip["ignored"] is False
+    assert "Whole Milk" in skip["reply"] and skip["cart"]["items"] == []
+
+    ctx = CartContext(CATALOG, PANTRY_MILK, empty_group_cart(), "alex", "Alex", names)
+    added = asyncio.run(handle("we need hummus and chips", ctx))
+    assert {i["name"] for i in added["cart"]["items"]} == {"Hummus Classic", "Tortilla Chips"}
+    assert added["cart"]["total"] == 6.48
+
+    ctx = CartContext(CATALOG, PANTRY_MILK, ctx.cart, "maya", "Maya", names)
+    merged = asyncio.run(handle("add hummus", ctx))
+    hummus = next(i for i in merged["cart"]["items"] if i["name"] == "Hummus Classic")
+    assert hummus["requesters"] == ["alex", "maya"]
+
+    ignored = asyncio.run(handle("see you tonight", ctx))
+    assert ignored["ignored"] is True and ignored["reply"] is None
 
 
 if __name__ == "__main__":

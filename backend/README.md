@@ -13,7 +13,7 @@
 5. `uvicorn app.main:app --reload` → open http://localhost:8000/docs
 
 ## Endpoints
-`GET /health` · `GET /products?category=` · `GET /users/{id}` · `GET/POST /users/{id}/pantry` · `GET /users/{id}/savings`
+`GET /health` · `GET /products?category=` · `GET /users/{id}` · `GET/POST /users/{id}/pantry` · `GET /users/{id}/savings` · `POST /agent/message` · `GET /households/{id}/cart`
 
 All prices/products are **sample data**.
 
@@ -31,3 +31,13 @@ Expected: **Swap** → Greek Yogurt Cup Vanilla at Store B, saves $2.20, logged 
 Try `"query":"peanut butter crunch"` → **Skip** (peanut allergy). Body also accepts `product_id` or `barcode`.
 
 Tests: `python test_engine.py`
+
+## Group cart (Photon / curl)
+Maya `+15555550101`, Alex `+15555550102`. Household id `665f00000000000000000010`. Without `XAI_API_KEY` the regex fallback still adds/skips/merges.
+
+```bash
+curl -X POST http://localhost:8000/agent/message -H "Content-Type: application/json" \
+  -d '{"space_id":"demo","sender":"+15555550101","text":"add milk"}'
+```
+
+Expected: Skip Whole Milk (already in pantry). Photon sidecar: `cd photon-agent && npm start` (see repo `AGENTS.md`).

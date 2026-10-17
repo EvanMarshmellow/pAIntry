@@ -1,4 +1,5 @@
 """Deterministic Convince Me math. No LLM here: every number comes from this file."""
+import re
 
 
 def cheapest(product):
@@ -89,3 +90,94 @@ def analyze(product, user, pantry, alternatives, week_spent=0.0):
         verdict, why = "Buy", "Good value and fits your budget"
     facts["draft_verdict"], facts["draft_reason"] = verdict, why
     return facts
+
+
+# --- Group cart (name match only; do not use in_pantry, which also matches category) ---
+
+
+def empty_group_cart():
+    return {"items": [], "skipped": []}
+
+
+def _pid(product):
+    return str(product.get("_id", product.get("name")))
+
+
+def _word_in(query, name):
+    return bool(re.search(rf"(?:^|[^a-z0-9]){re.escape(query)}(?:[^a-z0-9]|$)", name))
+
+
+def resolve_product(query, products, pantry=None):
+    """Best catalog match for a grocery phrase. Prefer a pantry hit so 'add milk' skips Whole Milk."""
+    q = (query or "").strip().lower()
+    if not q:
+        return None
+    scored = []
+    for p in products:
+        name = (p.get("name") or "").lower()
+        if not name:
+            continue
+        if name == q:
+            rank = 0
+        elif _word_in(q, name):
+            rank = 1
+        elif q in name or name in q:
+            rank = 2
+        else:
+            continue
+        scored.append((rank, len(name), name, p))
+    if not scored:
+        return None
+    scored.sort(key=lambda row: (row[0], row[1], row[2]))
+    if pantry:
+        hits = [p for _, _, _, p in scored if pantry_name_match(p, pantry)]
+        if hits:
+            return hits[0]
+    return scored[0][3]
+
+
+def pantry_name_match(product, pantry):
+    """True when pantry and product names overlap. Does not compare category."""
+    name = (product.get("name") or "").lower()
+    if not name:
+        return None
+    for item in pantry or []:
+        iname = (item.get("name") or "").lower()
+        if iname and (iname in name or name in iname):
+            return item["name"]
+    return None
+
+
+def add_to_group_cart(cart, product, user_id, pantry):
+    """Skip pantry hits, merge the same product_id, otherwise append cheapest store/price."""
+    out = {
+        "items": [dict(line) for line in (cart or {}).get("items") or []],
+        "skipped": list((cart or {}).get("skipped") or []),
+    }
+    for line in out["items"]:
+        line["requesters"] = list(line.get("requesters") or [])
+    have = pantry_name_match(product, pantry)
+    name = product["name"]
+    if have:
+        out["skipped"].append({"name": name, "pantry_name": have, "requester": user_id})
+        return out, {"action": "skipped", "product": name, "pantry_name": have}
+    pid = _pid(product)
+    for line in out["items"]:
+        if str(line.get("product_id")) == pid:
+            if user_id not in line["requesters"]:
+                line["requesters"].append(user_id)
+            return out, {"action": "merged", "product": name, "name": name,
+                         "product_id": pid, "requesters": list(line["requesters"]),
+                         "store": line.get("store"), "price": line.get("price")}
+    store, price = cheapest(product)
+    line = {"product_id": pid, "name": name, "quantity": 1,
+            "requesters": [user_id], "store": store, "price": price}
+    out["items"].append(line)
+    return out, {"action": "added", **line}
+
+
+def cart_summary(cart):
+    items = list((cart or {}).get("items") or [])
+    total = round(sum((line.get("price") or 0) for line in items), 2)
+    return {"items": items, "skipped": list((cart or {}).get("skipped") or []),
+            "total": total, "count": len(items)}

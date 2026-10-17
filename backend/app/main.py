@@ -8,9 +8,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from app.agent import CartContext, handle as handle_agent
 from app.db import close, connect, get_db
-from app.engine import analyze
+from app.engine import analyze, cart_summary
 from app.grok import explain
+
+MAYA_ID = ObjectId("665f00000000000000000001")
 
 
 @asynccontextmanager
@@ -145,3 +148,87 @@ async def convince_me(body: ConvinceIn, log: bool | None = None):
                                             "product": product["name"],
                                             "alternative": result["better_alternative"]["name"], "created_at": now})
     return clean(result | {"engine": facts, "logged": True})
+
+
+class AgentMessageIn(BaseModel):
+    space_id: str
+    sender: str
+    text: str
+    message_id: str | None = None
+
+
+async def _user_by_sender(db, sender: str):
+    user = await db.users.find_one({"phone": sender})
+    if user:
+        return user
+    user = await db.users.find_one({"_id": MAYA_ID})
+    if not user:
+        raise HTTPException(404, "User not found")
+    return user
+
+
+async def _household_for(db, uid: str, space_id: str):
+    household = await db.households.find_one({"space_id": space_id})
+    if not household:
+        household = await db.households.find_one({"members": uid})
+    if not household:
+        household = await db.households.find_one({})
+    if not household:
+        raise HTTPException(404, "Household not found")
+    if not household.get("space_id"):
+        await db.households.update_one({"_id": household["_id"]}, {"$set": {"space_id": space_id}})
+        household["space_id"] = space_id
+    return household
+
+
+@app.post("/agent/message")
+async def agent_message(body: AgentMessageIn):
+    db = get_db()
+    user = await _user_by_sender(db, body.sender)
+    uid = str(user["_id"])
+    household = await _household_for(db, uid, body.space_id)
+    member_ids = [str(m) for m in household.get("members") or [uid]]
+    member_oids = []
+    for mid in member_ids:
+        try:
+            member_oids.append(oid(mid))
+        except HTTPException:
+            continue
+    members = await db.users.find({"_id": {"$in": member_oids}}).to_list(20)
+    names = {str(m["_id"]): m.get("name", str(m["_id"])) for m in members}
+    pantry = await db.pantry_items.find({"user_id": {"$in": member_ids}}).to_list(500)
+    products = await db.products.find({}).to_list(500)
+    cart_doc = await db.group_carts.find_one({"space_id": body.space_id}) or {
+        "space_id": body.space_id, "household_id": str(household["_id"]),
+        "items": [], "skipped": []}
+    ctx = CartContext(products=products, pantry=pantry,
+                      cart={"items": list(cart_doc.get("items") or []),
+                            "skipped": list(cart_doc.get("skipped") or [])},
+                      user_id=uid, user_name=user.get("name", "Roommate"), names=names)
+    result = await handle_agent(body.text, ctx)
+    if not result.get("ignored"):
+        now = datetime.now(timezone.utc)
+        await db.group_carts.update_one(
+            {"space_id": body.space_id},
+            {"$set": {"space_id": body.space_id, "household_id": str(household["_id"]),
+                      "items": ctx.cart.get("items") or [], "skipped": ctx.cart.get("skipped") or [],
+                      "updated_at": now}},
+            upsert=True)
+    return clean(result | {"logged": not result.get("ignored"), "space_id": body.space_id,
+                           "user_id": uid, "household_id": str(household["_id"])})
+
+
+@app.get("/households/{household_id}/cart")
+async def get_household_cart(household_id: str):
+    db = get_db()
+    household = await db.households.find_one({"_id": oid(household_id)})
+    if not household:
+        raise HTTPException(404, "Household not found")
+    hid = str(household["_id"])
+    cart = await db.group_carts.find_one({"household_id": hid})
+    if not cart and household.get("space_id"):
+        cart = await db.group_carts.find_one({"space_id": household["space_id"]})
+    if not cart:
+        return {"household_id": hid, "space_id": household.get("space_id"),
+                "items": [], "skipped": [], "total": 0, "count": 0}
+    return clean(cart_summary(cart) | {"household_id": hid, "space_id": cart.get("space_id")})

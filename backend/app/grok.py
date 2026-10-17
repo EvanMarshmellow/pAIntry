@@ -1,4 +1,4 @@
-"""Grok explains engine facts. Falls back to engine-only verdict on any problem."""
+"""AI explains engine facts (Grok or Gemini). Falls back to engine-only verdict on any problem."""
 import json
 import logging
 import os
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger("uvicorn.error")
 XAI_URL = "https://api.x.ai/v1/chat/completions"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 SYSTEM = """You are a friendly grocery assistant giving a Buy/Skip/Swap verdict from ENGINE FACTS.
 Rules:
 - Use ONLY numbers that appear in the facts. Never invent or round differently.
@@ -111,35 +112,42 @@ def fallback(f) -> dict:
     return postprocess(v, f) | {"source": "engine"}
 
 
+def _provider():
+    """Pick the AI provider from .env: AI_PROVIDER=gemini or grok."""
+    name = os.getenv("AI_PROVIDER", "grok").lower()
+    if name == "gemini":
+        return name, os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_MODEL", "gemini-2.5-flash"), GEMINI_URL
+    return "grok", os.getenv("XAI_API_KEY"), os.getenv("GROK_MODEL", "grok-4-fast"), XAI_URL
+
+
 async def explain(f) -> dict:
-    key = os.getenv("XAI_API_KEY")
-    if not key:
+    name, key, model, url = _provider()
+    if os.getenv("USE_GROK", "true").lower() != "true" or not key:
         return fallback(f)
-    model = os.getenv("GROK_MODEL", "grok-4-fast")
     msgs = [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"Should I buy {f['product']['name']}?\nENGINE FACTS:\n{json.dumps(f, default=str)}"}]
     try:
         async with httpx.AsyncClient(timeout=15) as http:
             for _ in range(3):
-                r = await http.post(XAI_URL, headers={"Authorization": f"Bearer {key}"},
+                r = await http.post(url, headers={"Authorization": f"Bearer {key}"},
                                     json={"model": model, "messages": msgs, "tools": TOOLS, "temperature": 0.2})
                 r.raise_for_status()
                 msg = r.json()["choices"][0]["message"]
                 calls = msg.get("tool_calls") or []
                 if not calls:
-                    text = msg["content"].strip().removeprefix("```json").removeprefix("```").removesuffix("```")
-                    return postprocess(Verdict(**json.loads(text)), f) | {"source": "grok"}
+                    text = (msg.get("content") or "").strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+                    return postprocess(Verdict(**json.loads(text)), f) | {"source": name}
                 msgs.append({k: msg[k] for k in ("role", "content", "tool_calls") if k in msg})
                 for c in calls:
                     msgs.append({"role": "tool", "tool_call_id": c["id"],
                                  "content": json.dumps(_tool(c["function"]["name"], f), default=str)})
-        log.warning("Grok fallback: no final answer after 3 tool rounds")
+        log.warning("%s fallback: no final answer after 3 tool rounds", name)
     except httpx.TimeoutException:
-        log.warning("Grok fallback: timeout after 15s")
+        log.warning("%s fallback: timeout after 15s", name)
     except httpx.HTTPStatusError as e:
-        log.warning("Grok fallback: HTTP %s %s", e.response.status_code, e.response.text[:300])
+        log.warning("%s fallback: HTTP %s %s", name, e.response.status_code, e.response.text[:300])
     except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
-        log.warning("Grok fallback: bad response (%s): %r", type(e).__name__, e)
+        log.warning("%s fallback: bad response (%s): %r", name, type(e).__name__, e)
     except Exception as e:  # noqa: BLE001 - any failure -> deterministic answer
-        log.warning("Grok fallback: %r", e)
+        log.warning("%s fallback: %r", name, e)
     return fallback(f)

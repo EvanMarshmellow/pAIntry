@@ -1,4 +1,4 @@
-"""Offline tests: engine math + Grok fallback (no DB, no API key). Run: python test_engine.py"""
+"""Offline tests: engine math + Gemini fallback (no DB, no API key). Run: python test_engine.py"""
 import asyncio
 import os
 
@@ -42,17 +42,17 @@ def test_pantry_and_budget():
 
 
 def test_fallback_without_key():
-    os.environ.pop("XAI_API_KEY", None)
+    os.environ.pop("GEMINI_API_KEY", None)
     r = asyncio.run(explain(analyze(BAR, MAYA, [], ALTS)))
     assert r["source"] == "engine" and r["verdict"] == "Swap" and r["savings"] == 2.20
     assert r["better_alternative"] == {"name": "Greek Yogurt Cup Vanilla", "store": "Store B", "price": 1.29}
 
 
 def test_fallback_bad_key():
-    os.environ["XAI_API_KEY"] = "invalid"
+    os.environ["GEMINI_API_KEY"] = "invalid"
     r = asyncio.run(explain(analyze(PB, MAYA, [], ALTS)))
     assert r["source"] == "engine" and r["verdict"] == "Skip"
-    os.environ.pop("XAI_API_KEY")
+    os.environ.pop("GEMINI_API_KEY")
 
 
 def test_postprocess_fixes_vague_output():
@@ -133,7 +133,7 @@ def test_parse_add_queries():
 
 
 def test_agent_fallback_skip_add_merge():
-    os.environ.pop("XAI_API_KEY", None)
+    os.environ.pop("GEMINI_API_KEY", None)
     names = {"maya": "Maya", "alex": "Alex"}
     ctx = CartContext(CATALOG, PANTRY_MILK, empty_group_cart(), "maya", "Maya", names)
     skip = asyncio.run(handle("add milk", ctx))

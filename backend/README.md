@@ -18,7 +18,7 @@
 All prices/products are **sample data**.
 
 ## Convince Me (Buy / Skip / Swap)
-Set `XAI_API_KEY` (and optionally `GROK_MODEL`) in `.env`. Without a key, or if Grok errors or takes over 10s, you get the rule-based engine verdict (`"source": "engine"`).
+Set `GEMINI_API_KEY` (and optionally `GEMINI_MODEL`) in `.env`. Without a key, or if Gemini errors or times out, you get the rule-based engine verdict (`"source": "engine"`).
 All numbers (prices, savings) come from `app/engine.py`, never from the model.
 
 Maya's id is fixed at `665f00000000000000000001` (after running `python seed.py`).
@@ -33,7 +33,7 @@ Try `"query":"peanut butter crunch"` → **Skip** (peanut allergy). Body also ac
 Tests: `python test_engine.py`
 
 ## Group cart (Photon / curl)
-Maya `+15555550101`, Alex `+15555550102`. Household id `665f00000000000000000010`. Without `XAI_API_KEY` the regex fallback still adds/skips/merges.
+Maya `+15555550101`, Alex `+15555550102`. Household id `665f00000000000000000010`. Without `GEMINI_API_KEY` the regex fallback still adds/skips/merges.
 
 ```bash
 curl -X POST http://localhost:8000/agent/message -H "Content-Type: application/json" \

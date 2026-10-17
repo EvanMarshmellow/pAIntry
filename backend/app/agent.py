@@ -1,15 +1,14 @@
-"""Group-chat cart agent. Grok writes the iMessage; tools mutate the cart via the engine."""
+"""Group-chat cart agent. Gemini writes the iMessage; tools mutate the cart via the engine."""
 import json
 import logging
-import os
 import re
 
 import httpx
 
+from app import gemini
 from app.engine import add_to_group_cart, cart_summary, cheapest, resolve_product
 
 log = logging.getLogger("uvicorn.error")
-XAI_URL = "https://api.x.ai/v1/chat/completions"
 SYSTEM = """You are Cartwise in a roommate iMessage group helping add groceries to a shared cart.
 Rules:
 - Call tools to match products and change the cart. Never invent a product_id, name, store, or price.
@@ -196,26 +195,21 @@ async def handle(text, ctx: CartContext) -> dict:
     if not is_grocery_intent(text):
         return {"reply": None, "cart": labeled_summary(ctx.cart, ctx.names),
                 "source": "engine", "ignored": True}
-    key = os.getenv("XAI_API_KEY")
-    if not key:
+    if not gemini.api_key():
         return fallback(text, ctx)
-    model = os.getenv("GROK_MODEL", "grok-4-fast")
     msgs = [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"{ctx.user_name} says: {text}"}]
     try:
         async with httpx.AsyncClient(timeout=15) as http:
             for _ in range(6):
-                r = await http.post(XAI_URL, headers={"Authorization": f"Bearer {key}"},
-                                    json={"model": model, "messages": msgs, "tools": TOOLS, "temperature": 0.2})
-                r.raise_for_status()
-                msg = r.json()["choices"][0]["message"]
+                msg = await gemini.chat(http, msgs, tools=TOOLS)
                 calls = msg.get("tool_calls") or []
                 if not calls:
                     reply = _parse_reply(msg.get("content") or "")
                     summary = labeled_summary(ctx.cart, ctx.names)
                     if not reply:
                         return fallback(text, ctx)
-                    return {"reply": reply, "cart": summary, "source": "grok", "ignored": False}
+                    return {"reply": reply, "cart": summary, "source": "gemini", "ignored": False}
                 msgs.append({k: msg[k] for k in ("role", "content", "tool_calls") if k in msg})
                 for c in calls:
                     fn = c.get("function") or {}

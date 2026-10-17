@@ -1,15 +1,15 @@
-"""Grok explains engine facts. Falls back to engine-only verdict on any problem."""
+"""Gemini explains engine facts. Falls back to engine-only verdict on any problem."""
 import json
 import logging
-import os
 import re
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, Field
 
+from app import gemini
+
 log = logging.getLogger("uvicorn.error")
-XAI_URL = "https://api.x.ai/v1/chat/completions"
 SYSTEM = """You are a friendly grocery assistant giving a Buy/Skip/Swap verdict from ENGINE FACTS.
 Rules:
 - Use ONLY numbers that appear in the facts. Never invent or round differently.
@@ -112,34 +112,29 @@ def fallback(f) -> dict:
 
 
 async def explain(f) -> dict:
-    key = os.getenv("XAI_API_KEY")
-    if not key:
+    if not gemini.api_key():
         return fallback(f)
-    model = os.getenv("GROK_MODEL", "grok-4-fast")
     msgs = [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"Should I buy {f['product']['name']}?\nENGINE FACTS:\n{json.dumps(f, default=str)}"}]
     try:
         async with httpx.AsyncClient(timeout=15) as http:
             for _ in range(3):
-                r = await http.post(XAI_URL, headers={"Authorization": f"Bearer {key}"},
-                                    json={"model": model, "messages": msgs, "tools": TOOLS, "temperature": 0.2})
-                r.raise_for_status()
-                msg = r.json()["choices"][0]["message"]
+                msg = await gemini.chat(http, msgs, tools=TOOLS)
                 calls = msg.get("tool_calls") or []
                 if not calls:
-                    text = msg["content"].strip().removeprefix("```json").removeprefix("```").removesuffix("```")
-                    return postprocess(Verdict(**json.loads(text)), f) | {"source": "grok"}
+                    text = (msg.get("content") or "").strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+                    return postprocess(Verdict(**json.loads(text)), f) | {"source": "gemini"}
                 msgs.append({k: msg[k] for k in ("role", "content", "tool_calls") if k in msg})
                 for c in calls:
                     msgs.append({"role": "tool", "tool_call_id": c["id"],
                                  "content": json.dumps(_tool(c["function"]["name"], f), default=str)})
-        log.warning("Grok fallback: no final answer after 3 tool rounds")
+        log.warning("Gemini fallback: no final answer after 3 tool rounds")
     except httpx.TimeoutException:
-        log.warning("Grok fallback: timeout after 15s")
+        log.warning("Gemini fallback: timeout after 15s")
     except httpx.HTTPStatusError as e:
-        log.warning("Grok fallback: HTTP %s %s", e.response.status_code, e.response.text[:300])
+        log.warning("Gemini fallback: HTTP %s %s", e.response.status_code, e.response.text[:300])
     except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
-        log.warning("Grok fallback: bad response (%s): %r", type(e).__name__, e)
+        log.warning("Gemini fallback: bad response (%s): %r", type(e).__name__, e)
     except Exception as e:  # noqa: BLE001 - any failure -> deterministic answer
-        log.warning("Grok fallback: %r", e)
+        log.warning("Gemini fallback: %r", e)
     return fallback(f)

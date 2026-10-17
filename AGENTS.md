@@ -1,6 +1,6 @@
 # pAIntry agent map
 
-Grocery assistant (working name Cartwise) for DubHacks '26, Visa track. The engine decides Buy / Skip / Swap, prices, savings, catalog matches, pantry skips, and group-cart merges. Grok only writes the words. Prices are seeded sample data. Checkout and payments are not built. There is no weekly recap and no Gemini call.
+Grocery assistant (working name Cartwise) for DubHacks '26, Visa track. The engine decides Buy / Skip / Swap, prices, savings, catalog matches, pantry skips, and group-cart merges. Gemini only writes the words. Prices are seeded sample data. Checkout and payments are not built. There is no weekly recap Gemini route yet.
 
 The root [README.md](README.md) is the product pitch. It lists Expo, Perceptron, voice, and a Gemini recap that are **not in the repo**. Photon group chat **is** in the repo (`POST /agent/message` plus [`photon-agent/`](photon-agent/)). Trust this file and `backend/` for what exists.
 
@@ -16,14 +16,15 @@ Not implemented: Expo `app/`, Perceptron scan, Grok Voice, Grok Imagine, nutriti
 
 | Path | Role |
 |---|---|
-| [backend/app/main.py](backend/app/main.py) | FastAPI routes. Loads user, product, pantry, week spend, household cart; calls the engine, Grok, and the chat agent. |
+| [backend/app/main.py](backend/app/main.py) | FastAPI routes. Loads user, product, pantry, week spend, household cart; calls the engine, Gemini, and the chat agent. |
 | [backend/app/engine.py](backend/app/engine.py) | All math. No HTTP, no model imports. Convince Me plus group-cart helpers. |
-| [backend/app/grok.py](backend/app/grok.py) | Explains Convince Me engine facts. `postprocess` overwrites the model's numbers. Missing key, timeout, or bad JSON falls back to the engine (`"source": "engine"`). |
-| [backend/app/agent.py](backend/app/agent.py) | iMessage group-cart tool loop. Tools call the engine. Regex fallback if Grok is down. |
+| [backend/app/grok.py](backend/app/grok.py) | Explains Convince Me engine facts (via Gemini). `postprocess` overwrites the model's numbers. Missing key, timeout, or bad JSON falls back to the engine (`"source": "engine"`). |
+| [backend/app/gemini.py](backend/app/gemini.py) | OpenAI-compatible Gemini chat client (`GEMINI_API_KEY`, `GEMINI_MODEL`). |
+| [backend/app/agent.py](backend/app/agent.py) | iMessage group-cart tool loop. Tools call the engine. Regex fallback if Gemini is down. |
 | [backend/app/db.py](backend/app/db.py) | Motor client, database name, collection list, indexes. |
 | [backend/seed.py](backend/seed.py) | Drops every collection and inserts sample products, Maya, Alex, pantry, and household. |
 | [backend/test_engine.py](backend/test_engine.py) | Offline tests. No database and no API key. |
-| [backend/.env.example](backend/.env.example) | `MONGODB_URI`, `DB_NAME`, `XAI_API_KEY`, `GROK_MODEL`. Photon vars belong in `photon-agent/.env`. |
+| [backend/.env.example](backend/.env.example) | `MONGODB_URI`, `DB_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `PERCEPTRON_API_KEY`. Photon vars belong in `photon-agent/.env`. |
 | [photon-agent/index.js](photon-agent/index.js) | Spectrum webhook sidecar. Forwards text to FastAPI, sends the reply with `space.send()`. Does not parse groceries. |
 
 ## Run
@@ -85,7 +86,7 @@ Body: `{ "space_id", "sender", "text", "message_id?" }`. `sender` is a phone (`+
 
 Replies only for grocery intent (`add`, `need`, `put on the list`, `what's on the list`, `@cartwise`). Other chat returns `"ignored": true` and `"reply": null` so Photon does not send.
 
-Returns `{ "reply", "cart", "source": "grok"|"engine", "ignored", "logged", "space_id", "user_id", "household_id" }`. Cart prices always come from the engine.
+Returns `{ "reply", "cart", "source": "gemini"|"engine", "ignored", "logged", "space_id", "user_id", "household_id" }`. Cart prices always come from the engine.
 
 ```powershell
 curl -X POST http://localhost:8000/agent/message -H "Content-Type: application/json" -d "{\"space_id\":\"demo\",\"sender\":\"+15555550101\",\"text\":\"add milk\"}"
@@ -93,7 +94,7 @@ curl -X POST http://localhost:8000/agent/message -H "Content-Type: application/j
 
 Expected: Skip Whole Milk (already in pantry). Then Alex `we need hummus and chips` adds Hummus Classic and Tortilla Chips. Then Maya `add hummus` merges requesters. `what's on the list?` reads the cart.
 
-Grok tools (engine JSON only): `get_pantry`, `resolve_product`, `add_cart_item`, `get_cart`. Missing key / timeout / bad JSON uses regex `add|need` parsing in [backend/app/agent.py](backend/app/agent.py).
+Gemini tools (engine JSON only): `get_pantry`, `resolve_product`, `add_cart_item`, `get_cart`. Missing key / timeout / bad JSON uses regex `add|need` parsing in [backend/app/agent.py](backend/app/agent.py).
 
 ## Data
 
@@ -142,7 +143,7 @@ Seed products live in the `P` list in [backend/seed.py](backend/seed.py), not in
 
 `protein_per_pkg` is `protein_g * servings`. Seed rows omit `servings`, so the multiplier is 1 and "per package" is the per-serving value.
 
-Grok may suggest copy. [backend/app/grok.py](backend/app/grok.py) `postprocess` forces Skip on allergy conflicts, copies savings and the alternative from the engine, and replaces vague reasons with numeric engine reasons. Do not let a prompt or model response become the source of a price.
+Gemini may suggest copy. [backend/app/grok.py](backend/app/grok.py) `postprocess` forces Skip on allergy conflicts, copies savings and the alternative from the engine, and replaces vague reasons with numeric engine reasons. Do not let a prompt or model response become the source of a price.
 
 ## Group cart rules
 

@@ -1,7 +1,0 @@
-fastapi
-uvicorn[standard]
-motor
-pymongo[srv]
-python-dotenv
-pydantic
-httpx

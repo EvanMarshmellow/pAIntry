@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons'
 import * as Haptics from 'expo-haptics'
 import { router, useLocalSearchParams } from 'expo-router'
+import { useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Button, ButtonIcon, ButtonText } from '@/components/Button'
@@ -74,39 +75,45 @@ export default function ConvinceMe() {
 }
 
 function VerdictCard({ verdict, bottomInset }: { verdict: Verdict; bottomInset: number }) {
-  const { dispatch } = useCart()
+  const { addQuery } = useCart()
   const { product, alternative } = verdict.engine
   const tone = verdictColors[verdict.verdict]
+  const [adding, setAdding] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function addNamed(name: string) {
+    setAdding(true)
+    setError(null)
+    try {
+      const action = await addQuery(name)
+      if (action === 'skipped') {
+        setError('You already have that at home.')
+        return
+      }
+      if (action === 'unknown') {
+        setError("Couldn't find that at nearby stores.")
+        return
+      }
+      if (action === 'unavailable') {
+        setError("Kroger can't be reached right now.")
+        return
+      }
+      done()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not add to your list')
+    } finally {
+      setAdding(false)
+    }
+  }
 
   function addProduct() {
     if (product.price == null) return
-    dispatch({
-      type: 'add',
-      item: {
-        name: product.name,
-        category: product.category,
-        store: product.cheapest_store,
-        price: product.price,
-        proteinG: product.protein_g_per_package,
-      },
-    })
-    done()
+    void addNamed(product.name)
   }
 
   function addAlternative() {
-    if (!alternative || alternative.price == null) return
-    dispatch({
-      type: 'add',
-      item: {
-        name: alternative.name,
-        // Alternatives come from the same category as the product.
-        category: product.category,
-        store: alternative.store,
-        price: alternative.price,
-        proteinG: alternative.protein_g_per_package,
-      },
-    })
-    done()
+    if (!alternative || alternative.price == null || !alternative.name) return
+    void addNamed(alternative.name)
   }
 
   function done() {
@@ -178,19 +185,20 @@ function VerdictCard({ verdict, bottomInset }: { verdict: Verdict; bottomInset: 
       </ScrollView>
 
       <View style={[styles.actions, { paddingBottom: Math.max(bottomInset, 16) }]}>
+        {error ? <Text style={[type.small, styles.addError]}>{error}</Text> : null}
         {verdict.verdict === 'Swap' && alternative ? (
           <>
-            <Button variant="secondary" onPress={addProduct} style={styles.action}>
+            <Button variant="secondary" onPress={addProduct} loading={adding} style={styles.action}>
               <ButtonText>Keep original</ButtonText>
             </Button>
-            <Button onPress={addAlternative} style={styles.action}>
+            <Button onPress={addAlternative} loading={adding} style={styles.action}>
               <ButtonIcon name="swap-horizontal" />
               <ButtonText>Swap</ButtonText>
             </Button>
           </>
         ) : verdict.verdict === 'Skip' ? (
           <>
-            <Button variant="secondary" onPress={addProduct} style={styles.action}>
+            <Button variant="secondary" onPress={addProduct} loading={adding} style={styles.action}>
               <ButtonText>Add anyway</ButtonText>
             </Button>
             <Button onPress={() => router.back()} style={styles.action}>
@@ -202,7 +210,7 @@ function VerdictCard({ verdict, bottomInset }: { verdict: Verdict; bottomInset: 
             <Button variant="secondary" onPress={() => router.back()} style={styles.action}>
               <ButtonText>Skip</ButtonText>
             </Button>
-            <Button onPress={addProduct} style={styles.action}>
+            <Button onPress={addProduct} loading={adding} style={styles.action}>
               <ButtonIcon name="add" />
               <ButtonText>Add to cart</ButtonText>
             </Button>
@@ -259,6 +267,7 @@ const styles = StyleSheet.create({
   sourceItem: { fontSize: 13, lineHeight: 18, color: colors.faint },
   actions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 12,
     paddingHorizontal: 20,
     paddingTop: 12,
@@ -266,4 +275,5 @@ const styles = StyleSheet.create({
     borderTopColor: colors.line,
   },
   action: { flex: 1 },
+  addError: { color: colors.danger, width: '100%', textAlign: 'center' },
 })

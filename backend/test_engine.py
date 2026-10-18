@@ -5,9 +5,12 @@ import os
 from app.agent import CartContext, fallback
 from app.engine import (
     add_group_pantry_item, add_to_group_cart, analyze, analyze_pantry_food_groups,
-    empty_group_cart, move_cart_line_to_group_pantry, pantry_edible_grams, pantry_food_group,
-    remove_group_pantry_item, set_group_pantry_quantity,
+    bump_repeat_line, clear_personal_list, empty_group_cart, live_search_terms,
+    merge_personal_lists, move_cart_line_to_group_pantry, pantry_edible_grams,
+    pantry_food_group, pick_live_product, remove_group_pantry_item, resolve_product,
+    set_group_pantry_quantity, set_personal_list_quantity, split_grocery_phrases,
 )
+from app.personal_agent import PersonalContext, fallback as personal_fallback, parse_add_queries
 from app.grok import DATA_SOURCES, Verdict, explain, postprocess
 
 
@@ -174,16 +177,23 @@ def test_group_cart_skips_only_the_pantry_list_it_is_given():
 def test_list_phrase_skips_group_pantry_and_pantry_phrase_skips_the_list():
     milk = {"_id": "m", "name": "Whole Milk", "prices": {"Store A": 3.29}}
     personal = [{"name": "Whole Milk", "quantity": 9, "user_id": "maya"}]
-    ctx = CartContext([milk], [], {"items": [], "skipped": []}, "u", "Maya")
-    listed = fallback("add milk", ctx)
+
+    async def milk_finder(query, pantry=None):
+        found = resolve_product(query, [milk], pantry)
+        if not found:
+            return {"status": "not_found", "query": query}
+        return {"status": "found", "query": query, "product": found}
+
+    ctx = CartContext([milk], [], {"items": [], "skipped": []}, "u", "Maya", finder=milk_finder)
+    listed = asyncio.run(fallback("add milk", ctx))
     assert listed["cart"]["count"] == 1 and listed["pantry"] == []
     ctx = CartContext(
         [milk], [{"name": "Whole Milk", "quantity": 1, "unit": "item"}],
-        {"items": [], "skipped": []}, "u", "Maya")
-    skipped = fallback("we need milk", ctx)
+        {"items": [], "skipped": []}, "u", "Maya", finder=milk_finder)
+    skipped = asyncio.run(fallback("we need milk", ctx))
     assert skipped["cart"]["count"] == 0 and "group pantry" in skipped["reply"]
     ctx = CartContext([milk], [], {"items": [], "skipped": []}, "+1999", "Roommate")
-    stocked = fallback("add milk to the pantry", ctx)
+    stocked = asyncio.run(fallback("add milk to the pantry", ctx))
     assert stocked["cart"]["count"] == 0
     assert stocked["pantry"][0]["name"] == "Whole Milk"
     assert personal[0]["quantity"] == 9
@@ -223,6 +233,258 @@ def test_pantry_unmatched_name_only():
     assert r["lines"][0]["matched_product"] is False
     assert r["lines"][0]["group"] == "vegetables"
     assert r["groups"]["vegetables"]["grams_on_hand"] > 0
+
+
+def _hit(name, brand="Store"):
+    return {"_id": name, "name": name, "brand": brand, "prices": {"QFC": 2.99}}
+
+
+def test_pick_live_product_everyday_groceries():
+    hits = [
+        _hit("Oreo Chocolate Sandwich Cookies", "Nabisco"),
+        _hit("Large Brown Eggs", "Simple Truth"),
+        _hit("Bananas", "Fresh"),
+        _hit("Tomato on the Vine", "Fresh"),
+        _hit("Russet Potatoes", "Fresh"),
+        _hit("Chobani Nonfat Greek Yogurt", "Chobani"),
+        _hit("Boneless Skinless Chicken Breast", "Foster Farms"),
+        _hit("Chicken Thighs", "Foster Farms"),
+        _hit("Ground Beef 85/15", "Kroger"),
+        _hit("Ground Turkey 93/7", "Kroger"),
+        _hit("Oatly Oatmilk Original", "Oatly"),
+        _hit("Coca-Cola Classic", "Coca-Cola"),
+        _hit("Kraft Macaroni & Cheese", "Kraft"),
+        _hit("Bounty Paper Towels", "Bounty"),
+        _hit("Charmin Bath Tissue", "Charmin"),
+        _hit("Hellmann's Real Mayonnaise", "Hellmann's"),
+        _hit("Jif Creamy Peanut Butter", "Jif"),
+        _hit("Challenge Salted Butter", "Challenge"),
+        _hit("Tillamook Sharp Cheddar Cheese", "Tillamook"),
+        _hit("Kraft Deli Cheese Slices", "Kraft"),
+        _hit("Barilla Spaghetti", "Barilla"),
+        _hit("California Olive Ranch Olive Oil", "California Olive Ranch"),
+        _hit("Crisco Vegetable Oil", "Crisco"),
+        _hit("Haagen-Dazs Vanilla Ice Cream", "Haagen-Dazs"),
+        _hit("Heavy Whipping Cream", "Darigold"),
+        _hit("Daisy Sour Cream", "Daisy"),
+        _hit("Cheerios Cereal", "General Mills"),
+        _hit("Tropicana Orange Juice", "Tropicana"),
+        _hit("Minute Maid Apple Juice", "Minute Maid"),
+        _hit("Frozen Blueberries", "Kroger"),
+        _hit("Sara Lee White Sandwich Bread", "Sara Lee"),
+        _hit("Whole Wheat Bread", "Dave's"),
+        _hit("Bread and Butter Pickles", "Vlasic"),
+        _hit("Kroger Vitamin D Whole Milk", "Kroger"),
+        _hit("Almond Breeze Unsweetened Almond Milk", "Almond Breeze"),
+        _hit("Fat Free Milk", "Kroger"),
+        _hit("Reduced Fat 2% Milk", "Kroger"),
+        _hit("Hamburger Buns", "Kroger"),
+        _hit("Ground Hamburger", "Kroger"),
+        _hit("Ham Steak", "Kroger"),
+        _hit("Ore-Ida French Fries", "Ore-Ida"),
+        _hit("Pop-Tarts Frosted Strawberry", "Kellogg's"),
+        _hit("Cheez-It Original", "Sunshine"),
+        _hit("Dawn Dishwashing Liquid", "Dawn"),
+        _hit("Glad ForceFlex Garbage Bags", "Glad"),
+        _hit("Reynolds Wrap Aluminum Foil", "Reynolds"),
+        _hit("Glad Plastic Wrap", "Glad"),
+        _hit("Kleenex Facial Tissue", "Kleenex"),
+        _hit("Q-tips Cotton Swabs", "Q-tips"),
+        _hit("Band-Aid Adhesive Bandages", "Band-Aid"),
+        _hit("Green Onions", "Fresh"),
+        _hit("Mountain Dew", "Pepsi"),
+        _hit("Sweet Baby Ray's Barbecue Sauce", "Sweet Baby Ray's"),
+        _hit("Heinz Tomato Ketchup", "Heinz"),
+        _hit("Cool Whip Extra Creamy Whipped Topping", "Cool Whip"),
+        _hit("Welch's Grape Jelly", "Welch's"),
+        _hit("Eggo Homestyle Waffles", "Eggo"),
+        _hit("Milk Chocolate Bar", "Hershey's"),
+    ]
+    expect = {
+        "oreos": "Oreo Chocolate Sandwich Cookies",
+        "eggs": "Large Brown Eggs",
+        "bananas": "Bananas",
+        "tomatoes": "Tomato on the Vine",
+        "potatoes": "Russet Potatoes",
+        "greek yogurt": "Chobani Nonfat Greek Yogurt",
+        "chicken breast": "Boneless Skinless Chicken Breast",
+        "ground beef": "Ground Beef 85/15",
+        "oat milk": "Oatly Oatmilk Original",
+        "coke": "Coca-Cola Classic",
+        "mac and cheese": "Kraft Macaroni & Cheese",
+        "paper towels": "Bounty Paper Towels",
+        "toilet paper": "Charmin Bath Tissue",
+        "mayo": "Hellmann's Real Mayonnaise",
+        "peanut butter": "Jif Creamy Peanut Butter",
+        "butter": "Challenge Salted Butter",
+        "cheddar": "Tillamook Sharp Cheddar Cheese",
+        "cheese": "Kraft Deli Cheese Slices",
+        "spaghetti": "Barilla Spaghetti",
+        "olive oil": "California Olive Ranch Olive Oil",
+        "ice cream": "Haagen-Dazs Vanilla Ice Cream",
+        "cream": "Heavy Whipping Cream",
+        "cheerios": "Cheerios Cereal",
+        "oj": "Tropicana Orange Juice",
+        "orange juice": "Tropicana Orange Juice",
+        "berries": "Frozen Blueberries",
+        "bread": "Sara Lee White Sandwich Bread",
+        "milk": "Kroger Vitamin D Whole Milk",
+        "burgers": "Ground Hamburger",
+        "ham": "Ham Steak",
+        "fries": "Ore-Ida French Fries",
+        "pop tarts": "Pop-Tarts Frosted Strawberry",
+        "cheez its": "Cheez-It Original",
+        "dish soap": "Dawn Dishwashing Liquid",
+        "trash bags": "Glad ForceFlex Garbage Bags",
+        "tin foil": "Reynolds Wrap Aluminum Foil",
+        "saran wrap": "Glad Plastic Wrap",
+        "kleenex": "Kleenex Facial Tissue",
+        "q-tips": "Q-tips Cotton Swabs",
+        "band-aids": "Band-Aid Adhesive Bandages",
+        "scallions": "Green Onions",
+        "mt dew": "Mountain Dew",
+        "bbq sauce": "Sweet Baby Ray's Barbecue Sauce",
+        "catsup": "Heinz Tomato Ketchup",
+        "cool whip": "Cool Whip Extra Creamy Whipped Topping",
+        "pb": "Jif Creamy Peanut Butter",
+        "skim milk": "Fat Free Milk",
+        "2% milk": "Reduced Fat 2% Milk",
+        "jelly": "Welch's Grape Jelly",
+    }
+    for query, name in expect.items():
+        got = pick_live_product(query, hits)
+        assert got and got["name"] == name, (query, None if not got else got["name"])
+    assert pick_live_product("zzzznotfood", hits) is None
+    assert pick_live_product("ham", [_hit("Hamburger Buns")]) is None
+    assert pick_live_product("milk", hits, [{"name": "Almond Milk"}])["name"] == "Almond Breeze Unsweetened Almond Milk"
+    assert "orange juice" in live_search_terms("oj")
+    assert live_search_terms("Oreos") == ["Oreos"]
+
+
+def test_split_everyday_grocery_phrases():
+    assert parse_add_queries("add mac and cheese and milk to my list") == ["mac and cheese", "milk"]
+    assert parse_add_queries("add peanut butter and jelly") == ["peanut butter", "jelly"]
+    assert split_grocery_phrases("peas and carrots, bread") == ["peas and carrots", "bread"]
+
+
+def test_repeat_add_bumps_same_retail_item():
+    cart = {"items": [{
+        "product_id": "111", "name": "Oreo Chocolate Sandwich Cookies", "quantity": 1,
+        "store": "QFC University Village", "price": 4.29,
+    }], "skipped": []}
+    product = {"_id": "222", "name": "Oreo Chocolate Sandwich Cookies Family Size", "prices": {"QFC": 6.99}}
+    updated, result = bump_repeat_line(cart, product)
+    assert result["action"] == "quantity" and result["quantity"] == 2
+    assert result["product_id"] == "111" and updated["items"][0]["price"] == 4.29
+
+
+def test_personal_list_adds_live_groceries_not_seed():
+    hits = [
+        _hit("Oreo Chocolate Sandwich Cookies", "Nabisco"),
+        _hit("Kroger Vitamin D Whole Milk", "Kroger"),
+        _hit("Large Brown Eggs", "Simple Truth"),
+        _hit("Bananas", "Fresh"),
+        _hit("Sara Lee White Sandwich Bread", "Sara Lee"),
+        _hit("Kraft Macaroni & Cheese", "Kraft"),
+        _hit("Jif Creamy Peanut Butter", "Jif"),
+        _hit("Welch's Grape Jelly", "Welch's"),
+    ]
+
+    async def finder(query, pantry=None):
+        found = pick_live_product(query, hits, pantry)
+        if not found:
+            return {"status": "not_found", "query": query}
+        return {"status": "found", "query": query, "product": found}
+
+    seed = [{"_id": "seed-milk", "name": "Whole Milk", "prices": {"Store A": 1.0}}]
+    ctx = PersonalContext(
+        seed, [], {"items": [], "skipped": []}, {"weekly_budget": 60}, "u", "Maya", finder=finder)
+    added = asyncio.run(personal_fallback(
+        "add oreos, milk, eggs, bananas, bread, and mac and cheese to my list", ctx))
+    names = [line["name"] for line in added["list"]["items"]]
+    assert names == [
+        "Oreo Chocolate Sandwich Cookies",
+        "Kroger Vitamin D Whole Milk",
+        "Large Brown Eggs",
+        "Bananas",
+        "Sara Lee White Sandwich Bread",
+        "Kraft Macaroni & Cheese",
+    ]
+    assert all(line["product_id"] != "seed-milk" for line in added["list"]["items"])
+    assert added["list"]["items"][0]["product_id"] == "Oreo Chocolate Sandwich Cookies"
+
+    again = asyncio.run(personal_fallback("add oreos to my list", ctx))
+    oreo = next(line for line in again["list"]["items"] if "Oreo" in line["name"])
+    assert oreo["quantity"] == 2 and oreo["product_id"] == "Oreo Chocolate Sandwich Cookies"
+
+    removed = asyncio.run(personal_fallback("remove oreos", ctx))
+    assert all("Oreo" not in line["name"] for line in removed["list"]["items"])
+
+    both = asyncio.run(personal_fallback("add peanut butter and jelly to my list", ctx))
+    both_names = [line["name"] for line in both["list"]["items"]]
+    assert "Jif Creamy Peanut Butter" in both_names and "Welch's Grape Jelly" in both_names
+
+    async def down(query, pantry=None):
+        return {"status": "unavailable", "query": query}
+
+    offline = PersonalContext(
+        seed, [], {"items": [], "skipped": []}, {"weekly_budget": 60}, "u", "Maya", finder=down)
+    missed = asyncio.run(personal_fallback("add milk to my list", offline))
+    assert missed["list"]["count"] == 0 and "Kroger" in missed["reply"]
+
+
+def test_clear_personal_list_and_quantity():
+    cart = {"items": [
+        {"product_id": "milk", "name": "Whole Milk", "quantity": 2, "store": "QFC", "price": 3.49},
+        {"product_id": "eggs", "name": "Large Eggs", "quantity": 1, "store": "QFC", "price": 2.99},
+    ], "skipped": [{"name": "Bread", "pantry_name": "Bread"}]}
+    cleared, result = clear_personal_list(cart)
+    assert result == {"action": "cleared", "removed": 2}
+    assert cleared == {"items": [], "skipped": []}
+    empty, again = clear_personal_list(cleared)
+    assert again["removed"] == 0 and empty["items"] == []
+    updated, gone = set_personal_list_quantity(cart, "milk", 0)
+    assert gone["action"] == "removed"
+    assert [line["product_id"] for line in updated["items"]] == ["eggs"]
+    updated, bumped = set_personal_list_quantity(cart, "eggs", 3)
+    eggs = next(line for line in updated["items"] if line["product_id"] == "eggs")
+    assert eggs["quantity"] == 3
+    assert any(line["product_id"] == "milk" for line in updated["items"])
+
+
+def test_merge_personal_lists_sums_quantity():
+    primary = {"items": [{"product_id": "milk", "name": "Milk", "quantity": 1, "price": 3}], "skipped": []}
+    other = {"items": [
+        {"product_id": "milk", "name": "Milk", "quantity": 2, "price": 3},
+        {"product_id": "eggs", "name": "Eggs", "quantity": 1, "price": 2},
+    ], "skipped": []}
+    merged = merge_personal_lists(primary, other)
+    by_id = {line["product_id"]: line["quantity"] for line in merged["items"]}
+    assert by_id == {"milk": 3, "eggs": 1}
+    assert primary["items"][0]["quantity"] == 1
+
+
+def test_personal_clear_phrases():
+    items = [
+        {"product_id": "milk", "name": "Kroger Vitamin D Whole Milk", "quantity": 1, "store": "QFC", "price": 3.49},
+        {"product_id": "eggs", "name": "Large Brown Eggs", "quantity": 1, "store": "QFC", "price": 2.99},
+    ]
+    ctx = PersonalContext(
+        [], [], {"items": [], "skipped": []}, {"weekly_budget": 60}, "u", "Maya")
+    for phrase in ("clear my list", "remove my list", "delete the list", "empty my cart"):
+        ctx.list = {"items": [dict(line) for line in items], "skipped": []}
+        ctx.results = []
+        out = asyncio.run(personal_fallback(phrase, ctx))
+        assert out["list"]["items"] == [], phrase
+        assert "Cleared 2 items" in out["reply"], out["reply"]
+    ctx.list = {"items": [], "skipped": []}
+    ctx.results = []
+    empty = asyncio.run(personal_fallback("clear my list", ctx))
+    assert "already empty" in empty["reply"].lower()
+    ctx.list = {"items": [dict(line) for line in items], "skipped": []}
+    ctx.results = []
+    removed = asyncio.run(personal_fallback("remove milk", ctx))
+    assert [line["name"] for line in removed["list"]["items"]] == ["Large Brown Eggs"]
 
 
 if __name__ == "__main__":

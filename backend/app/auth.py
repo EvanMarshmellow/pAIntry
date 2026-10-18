@@ -5,10 +5,20 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from pymongo.errors import DuplicateKeyError
 
 from app.db import get_db
+from app.engine import merge_personal_lists
+
+# Phone-only accounts may be merged into an email account. Seeded demo users may not.
+SEED_USER_IDS = {
+    "665f00000000000000000001",
+    "665f00000000000000000002",
+}
 
 router = APIRouter(prefix="/login", tags=["login"])
 
@@ -40,9 +50,9 @@ def _hash(code: str) -> str:
     return hashlib.sha256(code.encode()).hexdigest()
 
 
-@router.post("/start")
-async def login_start(body: StartBody):
-    phone = normalize(body.phone)
+async def issue_code(phone: str) -> str:
+    """Store a hashed SMS code and text it. Returns the E.164 number."""
+    phone = normalize(phone)
     code = f"{secrets.randbelow(1_000_000):06d}"
     db = get_db()
     await db.login_codes.replace_one(
@@ -65,12 +75,12 @@ async def login_start(body: StartBody):
             r.raise_for_status()
     except Exception as e:
         raise HTTPException(502, f"Could not send code: {e}")
-    return {"sent": True, "phone": phone}
+    return phone
 
 
-@router.post("/verify")
-async def login_verify(body: VerifyBody):
-    phone = normalize(body.phone)
+async def consume_code(phone: str, code: str) -> str:
+    """Check a code, delete it, and return the E.164 number."""
+    phone = normalize(phone)
     db = get_db()
     rec = await db.login_codes.find_one({"phone": phone})
     if not rec:
@@ -81,10 +91,85 @@ async def login_verify(body: VerifyBody):
     if expires < datetime.now(timezone.utc) or rec["tries"] >= MAX_TRIES:
         await db.login_codes.delete_one({"phone": phone})
         raise HTTPException(400, "Code expired, request a new one")
-    if not secrets.compare_digest(rec["code_hash"], _hash(body.code.strip())):
+    if not secrets.compare_digest(rec["code_hash"], _hash(code.strip())):
         await db.login_codes.update_one({"phone": phone}, {"$inc": {"tries": 1}})
         raise HTTPException(401, "Wrong code")
     await db.login_codes.delete_one({"phone": phone})
+    return phone
+
+
+def _user_oid(user_id: str) -> ObjectId:
+    try:
+        return ObjectId(user_id)
+    except InvalidId:
+        raise HTTPException(400, "Invalid id")
+
+
+async def assert_phone_claimable(db, user_id: str, phone: str):
+    """409 when this number belongs to another email account or a seed user."""
+    other = await db.users.find_one({"phone": phone})
+    if not other or str(other["_id"]) == user_id:
+        return
+    other_id = str(other["_id"])
+    if other.get("email") or other.get("supabase_id") or other_id in SEED_USER_IDS:
+        raise HTTPException(409, "That number is already linked to another account")
+
+
+async def claim_phone(db, user_id: str, phone: str):
+    """Attach `phone` to the email user. A phone-only account is merged in first."""
+    user = await db.users.find_one({"_id": _user_oid(user_id)})
+    if not user:
+        raise HTTPException(404, "User not found")
+    phone = normalize(phone)
+    if user.get("phone") == phone:
+        return user
+    other = await db.users.find_one({"phone": phone})
+    if other and str(other["_id"]) != user_id:
+        await assert_phone_claimable(db, user_id, phone)
+        await _merge_phone_only_user(db, user_id, other)
+    try:
+        await db.users.update_one({"_id": user["_id"]}, {"$set": {"phone": phone}})
+    except DuplicateKeyError:
+        raise HTTPException(409, "That number is already linked to another account")
+    user["phone"] = phone
+    return user
+
+
+async def _merge_phone_only_user(db, email_user_id: str, phone_user: dict):
+    """Move the phone-only user's list and pantry, then free the number."""
+    phone_id = str(phone_user["_id"])
+    now = datetime.now(timezone.utc)
+    primary = await db.personal_lists.find_one({"user_id": email_user_id}) or {"items": [], "skipped": []}
+    other = await db.personal_lists.find_one({"user_id": phone_id}) or {"items": [], "skipped": []}
+    merged = merge_personal_lists(primary, other)
+    revision = int(primary.get("revision") or 0) + 1
+    await db.personal_lists.update_one(
+        {"user_id": email_user_id},
+        {"$set": {
+            "user_id": email_user_id,
+            "items": merged.get("items") or [],
+            "skipped": merged.get("skipped") or [],
+            "updated_at": now,
+            "revision": revision,
+        }},
+        upsert=True,
+    )
+    await db.pantry_items.update_many({"user_id": phone_id}, {"$set": {"user_id": email_user_id}})
+    await db.users.update_one({"_id": phone_user["_id"]}, {"$unset": {"phone": ""}})
+    await db.personal_lists.delete_one({"user_id": phone_id})
+    await db.users.delete_one({"_id": phone_user["_id"]})
+
+
+@router.post("/start")
+async def login_start(body: StartBody):
+    phone = await issue_code(body.phone)
+    return {"sent": True, "phone": phone}
+
+
+@router.post("/verify")
+async def login_verify(body: VerifyBody):
+    phone = await consume_code(body.phone, body.code)
+    db = get_db()
 
     user = await db.users.find_one({"phone": phone})
     new_user = False

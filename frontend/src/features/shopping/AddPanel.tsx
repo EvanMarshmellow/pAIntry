@@ -2,9 +2,11 @@ import Ionicons from '@expo/vector-icons/Ionicons'
 import { router } from 'expo-router'
 import { memo, useCallback, useMemo, useState } from 'react'
 import { FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
+import { Button, ButtonText } from '@/components/Button'
 import { Notice } from '@/components/Notice'
 import { ProductThumb } from '@/components/ProductThumb'
 import { api, type Product } from '@/lib/api'
+import { useCart } from '@/lib/cart'
 import { formatPrice } from '@/lib/format'
 import { useAsync } from '@/lib/useAsync'
 import { colors, radius, type } from '@/theme'
@@ -31,8 +33,39 @@ function toRow(p: Product): Row {
 }
 
 export function AddPanel({ onDone }: { onDone?: () => void }) {
+  const { addQuery } = useCart()
   const [query, setQuery] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [addError, setAddError] = useState<string | null>(null)
   const products = useAsync(() => api.products().then((list) => list.map(toRow)), 'products')
+
+  async function addToList() {
+    const text = query.trim()
+    if (!text || adding) return
+    setAdding(true)
+    setAddError(null)
+    try {
+      const action = await addQuery(text)
+      if (action === 'skipped') {
+        setAddError('You already have that at home.')
+        return
+      }
+      if (action === 'unknown') {
+        setAddError("Couldn't find that at nearby stores.")
+        return
+      }
+      if (action === 'unavailable') {
+        setAddError("Kroger can't be reached right now.")
+        return
+      }
+      setQuery('')
+      onDone?.()
+    } catch (e) {
+      setAddError(e instanceof Error ? e.message : 'Could not add to your list')
+    } finally {
+      setAdding(false)
+    }
+  }
 
   // No browsable "All products" list: products only show as search results.
   const searching = query.trim().length > 0
@@ -78,7 +111,8 @@ export function AddPanel({ onDone }: { onDone?: () => void }) {
               placeholder="Search products"
               placeholderTextColor={colors.faint}
               autoCorrect={false}
-              returnKeyType="search"
+              returnKeyType="done"
+              onSubmitEditing={addToList}
               style={styles.searchInput}
             />
             {query ? (
@@ -87,6 +121,12 @@ export function AddPanel({ onDone }: { onDone?: () => void }) {
               </Pressable>
             ) : null}
           </View>
+          {query.trim() ? (
+            <Button onPress={addToList} loading={adding}>
+              <ButtonText>Add to list</ButtonText>
+            </Button>
+          ) : null}
+          {addError ? <Text style={[type.small, styles.error]}>{addError}</Text> : null}
 
           <Pressable
             onPress={() => router.push('/scan')}
@@ -167,4 +207,5 @@ const styles = StyleSheet.create({
   rowName: { fontSize: 15, fontWeight: '500', color: colors.ink },
   separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.line, marginLeft: 62 },
   pressed: { opacity: 0.6 },
+  error: { color: colors.danger, textAlign: 'center' },
 })

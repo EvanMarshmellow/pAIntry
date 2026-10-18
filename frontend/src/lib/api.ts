@@ -5,6 +5,7 @@ import type {
   FoodGroups,
   NewPantryItem,
   PantryItem,
+  PersonalList,
   Product,
   ReceiptOcr,
   ReceiptPushResult,
@@ -18,6 +19,7 @@ export type {
   FoodGroups,
   NewPantryItem,
   PantryItem,
+  PersonalList,
   Product,
   ReceiptLine,
   ReceiptOcr,
@@ -124,6 +126,33 @@ export const api = {
     request<ReceiptPushResult>(`/users/${userId}/pantry/receipt`, {
       method: 'POST',
       body: JSON.stringify({ ocr, space_id: spaceId }),
+    }),
+  list: (userId: string) => request<PersonalList>(`/users/${userId}/list`),
+  addListItem: (userId: string, query: string) =>
+    request<PersonalList>(`/users/${userId}/list`, {
+      method: 'POST',
+      body: JSON.stringify({ query }),
+    }),
+  setListQuantity: (userId: string, productId: string, quantity: number) =>
+    request<PersonalList>(`/users/${userId}/list/items/${encodeURIComponent(productId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ quantity }),
+    }),
+  removeListItem: (userId: string, productId: string) =>
+    request<PersonalList>(`/users/${userId}/list/items/${encodeURIComponent(productId)}`, {
+      method: 'DELETE',
+    }),
+  clearList: (userId: string) =>
+    request<PersonalList>(`/users/${userId}/list`, { method: 'DELETE' }),
+  startPhoneLink: (userId: string, phone: string) =>
+    request<{ sent: boolean; phone: string }>(`/users/${userId}/phone/start`, {
+      method: 'POST',
+      body: JSON.stringify({ phone }),
+    }),
+  verifyPhoneLink: (userId: string, phone: string, code: string) =>
+    request<{ user_id: string; phone: string; name: string }>(`/users/${userId}/phone/verify`, {
+      method: 'POST',
+      body: JSON.stringify({ phone, code }),
     }),
   convinceMe: async (userId: string, input: ConvinceInput) => {
     const post = (body: ConvinceInput) =>

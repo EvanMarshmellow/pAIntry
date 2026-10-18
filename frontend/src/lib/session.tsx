@@ -17,6 +17,7 @@ type Session = {
   signIn: (userId: string) => Promise<void>
   signOut: () => void
   retry: () => void
+  refresh: () => Promise<void>
 }
 
 const SessionContext = createContext<Session | null>(null)
@@ -92,6 +93,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       retry: () => {
         setStatus('restoring')
         setAttempt((n) => n + 1)
+      },
+      refresh: async () => {
+        const id = await AsyncStorage.getItem(USER_ID_KEY).catch(() => null)
+        if (!id) return
+        setUser(await loadUser(id))
       },
     }),
     [status, user],

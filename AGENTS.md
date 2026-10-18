@@ -1,6 +1,6 @@
 # pAIntry agent map
 
-Grocery assistant (working name Cartwise) for DubHacks '26, Visa track. The engine decides Buy / Skip / Swap, prices, savings, catalog matches, pantry skips, and group-cart merges. Gemini only writes the words. Prices are seeded sample data. Checkout and payments are not built. There is no weekly recap Gemini route yet.
+Grocery assistant (working name Cartwise) for DubHacks '26, Visa track. The engine decides Buy / Skip / Swap, prices, savings, catalog matches, pantry skips, and group-cart merges. Gemini only writes the words. New iMessage shopping-list lines use live Kroger prices (UPC, nearby store). Convince Me uses Kroger for a live query and the seeded catalog otherwise. Receipt matching and pantry food groups still use seeded sample prices. Checkout and payments are not built. There is no weekly recap Gemini route yet.
 
 The root [README.md](README.md) is the product pitch. It lists Expo, Perceptron, voice, and a Gemini recap that are **not in the repo**. Photon iMessage **is** in the repo: 1:1 DMs → `POST /agent/personal`, group chats → `POST /agent/message` (see [`photon-agent/`](photon-agent/)). Trust this file and `backend/` for what exists.
 
@@ -74,9 +74,15 @@ Docs: http://localhost:8000/docs
 | `GET` | `/users/{id}/savings` | Sum of `savings_ledger.amount` for that user. |
 | `POST` | `/convince-me` | Body: `user_id` plus `product_id`, `barcode`, or `query`. `log: false` (or `?log=false`) skips writes. |
 | `POST` | `/agent/message` | Group iMessage (or curl). Mutates that group's `group_carts` and `group_pantry_items`. |
-| `POST` | `/agent/personal` | 1:1 DM (or curl). Mutates `personal_lists`. Unknown phone gets a signup message (no Maya default). Optional `image_base64` + `image_mime_type` for receipt OCR. |
+| `POST` | `/agent/personal` | 1:1 DM (or curl). Mutates `personal_lists`. Unknown phone is told to connect the number under Profile (no Maya default). Optional `image_base64` + `image_mime_type` for receipt OCR. |
 | `POST` | `/users/{id}/pantry/receipt` | Debug receipt flow with JSON `ocr` fixture (no image). |
-| `GET` | `/users/{id}/list` | Personal shopping list summary. |
+| `GET` | `/users/{id}/list` | Personal shopping list summary. Same document iMessage writes. |
+| `POST` | `/users/{id}/list` | Body: `{ "query" }`. Kroger search, then `add_live_product`. Response includes `action` (`added`, `quantity`, `skipped`, `unknown`, `unavailable`). |
+| `PATCH` | `/users/{id}/list/items/{product_id}` | Body: `{ "quantity" }`. `0` removes that line. |
+| `DELETE` | `/users/{id}/list/items/{product_id}` | Remove one line. |
+| `DELETE` | `/users/{id}/list` | Clear the personal list. |
+| `POST` | `/users/{id}/phone/start` | Body: `{ "phone" }`. Texts a code. Does not create a user. |
+| `POST` | `/users/{id}/phone/verify` | Body: `{ "phone", "code" }`. Saves the phone on this user. `409` if another email account or Maya/Alex already has it. |
 | `GET` | `/households/{id}/cart` | Current group cart for that household. |
 | `GET` | `/households/{id}/pantry` | That group's pantry only. Does not include member `pantry_items`. |
 
@@ -98,7 +104,7 @@ The first message for a `space_id` creates a household bound to that `space_id` 
 
 Two stores, chosen by phrasing:
 
-- Shopping list (`group_carts`): `add`, `need`, `put on the list`, `what's on the list`. Skip only when **this group's** pantry already has a name match.
+- Shopping list (`group_carts`): `add`, `need`, `put on the list`, `what's on the list`. Skip only when **this group's** pantry already has a name match. List adds search Kroger stores nearest the sender's `zip` (or `DEFAULT_ZIP`). `product_id` is the UPC. They do not match the seeded `products` collection. A miss says it was not found at nearby stores. If Kroger cannot be reached, the item is not added.
 - Group pantry (`group_pantry_items`): `add to the pantry`, `put in the pantry`, `we have`, `used`, `finished`, `move`, `remove from the pantry`. `move X to the pantry` / `we bought X` takes a list line into the group pantry (or adds it if it was not on the list). `used` / `finished` / `move X out` decrements quantity and deletes the line at 0. `we have 2 X` sets quantity.
 
 A plain `add milk` stays on the shopping list. This route never reads or writes `pantry_items`, `personal_lists`, or `users`. Personal 1:1 pantries stay on `/agent/personal`.
@@ -111,13 +117,13 @@ Returns `{ "reply", "cart", "pantry", "source": "gemini"|"engine", "ignored", "l
 curl -X POST http://localhost:8000/agent/message -H "Content-Type: application/json" -d "{\"space_id\":\"apt\",\"sender\":\"+15555550101\",\"text\":\"add milk to the pantry\"}"
 ```
 
-That writes `group_pantry_items` for `apt` only. `we need milk` then skips because the group pantry has milk. `add milk` with an empty group pantry adds Whole Milk to the group list. A second `space_id` does not see those lines. `GET /households/{id}/pantry` reads the group pantry.
+That writes `group_pantry_items` for `apt` only. `we need milk` then skips because the group pantry has milk. `add milk` with an empty group pantry searches Kroger and adds the matched milk with its live store and price. A second `space_id` does not see those lines. `GET /households/{id}/pantry` reads the group pantry. Group pantry writes still keep the spoken name and do not call Kroger.
 
 Gemini tools (engine JSON only): `get_pantry`, `resolve_product`, `add_cart_item`, `get_cart`, `add_pantry_item`, `set_pantry_quantity`, `remove_pantry_item`, `move_to_pantry`. Missing key / timeout / bad JSON uses regex parsing in [backend/app/agent.py](backend/app/agent.py). Pantry phrases must not fall through to `add_to_group_cart`.
 
 ### Personal DM (`POST /agent/personal`)
 
-Body: `{ "space_id", "sender", "text", "message_id?", "space_type?" }`. `sender` is E.164 (`+15555550101` Maya). **Only registered phones** are accepted; unknown senders get a short engine reply and no DB writes.
+Body: `{ "space_id", "sender", "text", "message_id?", "space_type?" }`. `sender` is E.164 (`+15555550101` Maya). **Only registered phones** are accepted; unknown senders get a short engine reply telling them to open Cartwise and connect the number under Profile, and no DB writes.
 
 Replies for grocery planning intent (list add/show, budget, expiring, `should I buy …`, etc.). Casual chat → `"ignored": true`, `"reply": null`.
 
@@ -127,7 +133,9 @@ Returns `{ "reply", "list", "source": "gemini"|"engine", "ignored", "logged", "s
 curl -X POST http://localhost:8000/agent/personal -H "Content-Type: application/json" -d "{\"space_id\":\"any;-;+15555550101\",\"sender\":\"+15555550101\",\"text\":\"what's expiring and add hummus to my list\"}"
 ```
 
-Gemini tools: `get_pantry`, `get_budget_status`, `get_expiring`, `resolve_product`, `add_list_item`, `remove_list_item`, `get_list`, `evaluate_product`. Fallback regex in [backend/app/personal_agent.py](backend/app/personal_agent.py).
+Gemini tools: `get_pantry`, `get_budget_status`, `get_expiring`, `resolve_product`, `add_list_item`, `remove_list_item`, `clear_list`, `get_list`, `evaluate_product`. Fallback regex in [backend/app/personal_agent.py](backend/app/personal_agent.py). List adds search Kroger the same way as the group list. `product_id` on new lines is the UPC. `remove oreos` matches those words against list line names. `clear my list`, `remove my list`, `delete the list`, and `empty my cart` wipe every line. `should I buy` still uses the seeded catalog.
+
+The app cart is this same `personal_lists` document. Profile links a phone with `POST /users/{id}/phone/start` and `/phone/verify`. A phone-only user (no email, not Maya or Alex) is merged: list quantities for the same `product_id` are summed, pantry lines move, and that user is deleted. Writes carry a `revision` and retry once when another writer saved first.
 
 ### Receipt photo (DM or group)
 
@@ -227,13 +235,17 @@ Do **not** reuse `in_pantry()` for adds. Category match would skip "hummus" beca
 4. `cart_summary(cart)` — lines, skipped, `total` (sum of cheapest prices). No equal-split math.
 5. `add_group_pantry_item`, `remove_group_pantry_item`, `set_group_pantry_quantity`, `move_cart_line_to_group_pantry` — mutate a group pantry list. They do not accept a user pantry. Pass `pantry=None` into `resolve_product` when the destination is the group pantry. The list passed into `add_to_group_cart` is the group pantry only.
 
+Shopping-list adds do not call `resolve_product` on the seeded catalog. `search_for_list` in [backend/app/kroger.py](backend/app/kroger.py) searches nearby stores, `to_engine` shapes each hit, and `pick_live_product` chooses one. The picker handles ordinary grocery wording: plurals (`oreos`, `tomatoes`, `berries`), brand plus name, squeezed compounds (`oat milk` / `oatmilk`), and spoken names (`coke`, `oj`, `mayo`, `pb`, `mac and cheese`, `tin foil`). A bare staple prefers the plain item when a flavored one is in the same hit list (`milk` prefers whole milk over almond milk) unless a pantry name overlaps a specific hit. A repeat add of the same retail name bumps quantity instead of inserting another size. `mac and cheese` stays one item; `peanut butter and jelly` is two.
+
 ## Personal list rules
 
 Same name matching as group cart (`resolve_product`, `pantry_name_match`), but persistence is per user and duplicate `product_id` **bumps quantity** instead of merging requesters:
 
-1. `add_to_personal_list(cart, product, pantry)` — pantry hit → `skipped`; else append or increment quantity with `cheapest()` store/price.
-2. `remove_from_personal_list(cart, product_id)` — drop line or `not_found`.
-3. `cart_summary(cart)` — same totals helper as group cart.
+1. `add_to_personal_list(cart, product, pantry)` — pantry hit → `skipped`; else append or increment quantity with `cheapest()` store/price. iMessage adds and `POST /users/{id}/list` go through `add_live_product`, which bumps a matching retail line first.
+2. `remove_from_personal_list(cart, product_id)` — drop the whole line or `not_found`. Spoken removes use `list_line_for_query` so `oreos` matches an Oreo line.
+3. `set_personal_list_quantity(cart, product_id, quantity)` — set one line. Quantity `<= 0` removes that line only. The app stepper uses this.
+4. `clear_personal_list(cart)` — drop every line and every pantry skip. iMessage clear phrases and `DELETE /users/{id}/list` use this.
+5. `cart_summary(cart)` — same totals helper as group cart.
 
 ## Demo users
 
@@ -249,4 +261,4 @@ A group pantry starts empty. It is not the union of member pantries. Maya's pers
 
 Do not add these unless asked: Expo app, Perceptron scan, voice session, nutrition-gap shopping list, group-cart cost split, mock Visa checkout, weekly recap.
 
-Planned routes in the root README (`/convince`, `/pantry/scan`, `/list`, `/voice/session`, `/ledger`) are not the live API. The live convince route is `POST /convince-me`. Group chat is `POST /agent/message`; 1:1 DM is `POST /agent/personal`. Personal list read is `GET /users/{id}/list`. Savings: `GET /users/{id}/savings`.
+Planned routes in the root README (`/convince`, `/pantry/scan`, `/list`, `/voice/session`, `/ledger`) are not the live API. The live convince route is `POST /convince-me`. Group chat is `POST /agent/message`; 1:1 DM is `POST /agent/personal`. Personal list read is `GET /users/{id}/list`. The app adds, changes quantity, removes, and clears through the list routes above. Savings: `GET /users/{id}/savings`.

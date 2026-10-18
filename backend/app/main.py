@@ -9,10 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import kroger, live_catalog
-from app.auth import router as auth_router
+from app.auth import assert_phone_claimable, claim_phone, issue_code, consume_code, normalize, router as auth_router
 from app.agent import CartContext, handle as handle_agent
 from app.db import close, connect, get_db
-from app.engine import analyze, analyze_pantry_food_groups, cart_summary
+from app.engine import (add_live_product, analyze, analyze_pantry_food_groups, cart_summary,
+                        clear_personal_list, remove_from_personal_list, set_personal_list_quantity)
 from app.grok import explain
 from app.personal_agent import PersonalContext, handle as handle_personal
 from app.receipt_agent import handle_receipt
@@ -148,6 +149,62 @@ def _aware(dt):
 
 async def _user_pantry(db, user_id: str):
     return await db.pantry_items.find({"user_id": user_id}).sort("expires_at", 1).to_list(500)
+
+
+def _personal_cart(doc):
+    return {
+        "items": list((doc or {}).get("items") or []),
+        "skipped": list((doc or {}).get("skipped") or []),
+    }
+
+
+async def load_personal_list(db, user_id: str):
+    doc = await db.personal_lists.find_one({"user_id": user_id}) or {}
+    return _personal_cart(doc) | {"revision": int(doc.get("revision") or 0)}
+
+
+def _revision_query(user_id: str, revision: int):
+    if revision == 0:
+        return {"user_id": user_id, "$or": [{"revision": 0}, {"revision": {"$exists": False}}]}
+    return {"user_id": user_id, "revision": revision}
+
+
+async def save_personal_list(db, user_id: str, cart, revision: int) -> bool:
+    """Write the list only when `revision` is still current. Returns False on a race."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "user_id": user_id,
+        "items": cart.get("items") or [],
+        "skipped": cart.get("skipped") or [],
+        "updated_at": now,
+        "revision": revision + 1,
+    }
+    result = await db.personal_lists.update_one(_revision_query(user_id, revision), {"$set": payload})
+    if result.matched_count:
+        return True
+    if revision != 0 or await db.personal_lists.find_one({"user_id": user_id}):
+        return False
+    try:
+        await db.personal_lists.insert_one(payload)
+        return True
+    except Exception:  # noqa: BLE001 - unique user_id lost the insert race
+        return False
+
+
+_NO_WRITE = {"unknown", "unavailable", "not_found"}
+
+
+async def mutate_personal_list(db, user_id: str, mutator):
+    """Apply `mutator(cart)` and save. On a revision clash, reload and try once more."""
+    for _ in range(2):
+        state = await load_personal_list(db, user_id)
+        cart = _personal_cart(state)
+        updated, result = await mutator(cart)
+        if result.get("action") in _NO_WRITE:
+            return updated, result
+        if await save_personal_list(db, user_id, updated, state["revision"]):
+            return updated, result
+    raise HTTPException(409, "List changed, try again")
 
 
 async def _week_spent(db, user_id: str) -> float:
@@ -408,7 +465,8 @@ async def agent_message(body: AgentMessageIn):
                       "space_id": body.space_id, "user_id": uid, "household_id": hid})
 
     ctx = CartContext(products=products, pantry=pantry, cart=cart,
-                      user_id=actor, user_name=user_name, names=names)
+                      user_id=actor, user_name=user_name, names=names,
+                      zip_code=(user or {}).get("zip"))
     result = await handle_agent(body.text or "", ctx)
     if not result.get("ignored"):
         now = datetime.now(timezone.utc)
@@ -424,7 +482,7 @@ async def agent_personal(body: AgentMessageIn):
     user = await _user_by_phone(db, body.sender)
     if not user:
         return {
-            "reply": "I don't recognize this number yet — ask your household admin to link your phone in Cartwise.",
+            "reply": "I don't recognize this number yet. Open Cartwise, sign in, and connect this number under Profile.",
             "list": {"items": [], "skipped": [], "total": 0, "count": 0},
             "source": "engine",
             "ignored": False,
@@ -437,8 +495,8 @@ async def agent_personal(body: AgentMessageIn):
     week_spent = await _week_spent(db, uid)
     products = await _with_real_stores(await db.products.find({}).to_list(500), user)
     products = await _add_missing_from_kroger(db, body.text, products, user)
-    list_doc = await db.personal_lists.find_one({"user_id": uid}) or {"user_id": uid, "items": [], "skipped": []}
-    personal_list = {"items": list(list_doc.get("items") or []), "skipped": list(list_doc.get("skipped") or [])}
+    loaded = await load_personal_list(db, uid)
+    personal_list = _personal_cart(loaded)
     receipt_out = await handle_receipt(
         db,
         user=user,
@@ -456,13 +514,10 @@ async def agent_personal(body: AgentMessageIn):
     if receipt_out:
         plist = receipt_out.pop("_personal_list", None)
         if plist is not None:
-            now = datetime.now(timezone.utc)
-            await db.personal_lists.update_one(
-                {"user_id": uid},
-                {"$set": {"user_id": uid, "items": plist.get("items") or [],
-                          "skipped": plist.get("skipped") or [], "updated_at": now}},
-                upsert=True,
-            )
+            saved = await save_personal_list(db, uid, plist, loaded["revision"])
+            if not saved:
+                fresh = await load_personal_list(db, uid)
+                await save_personal_list(db, uid, plist, fresh["revision"])
         return clean(receipt_out | {"logged": True, "space_id": body.space_id, "user_id": uid})
 
     if not (body.text or "").strip() and not body.image_base64:
@@ -484,29 +539,145 @@ async def agent_personal(body: AgentMessageIn):
         user_id=uid,
         user_name=user.get("name", "Friend"),
         week_spent=week_spent,
+        zip_code=user.get("zip"),
     )
     result = await handle_personal(body.text or "", ctx)
     if not result.get("ignored"):
-        now = datetime.now(timezone.utc)
-        await db.personal_lists.update_one(
-            {"user_id": uid},
-            {"$set": {"user_id": uid,
-                      "items": ctx.list.get("items") or [],
-                      "skipped": ctx.list.get("skipped") or [],
-                      "updated_at": now}},
-            upsert=True)
+        saved = await save_personal_list(db, uid, ctx.list, loaded["revision"])
+        if not saved:
+            fresh = await load_personal_list(db, uid)
+            ctx = PersonalContext(
+                products=products,
+                pantry=pantry,
+                personal_list=_personal_cart(fresh),
+                user=user,
+                user_id=uid,
+                user_name=user.get("name", "Friend"),
+                week_spent=week_spent,
+                zip_code=user.get("zip"),
+            )
+            result = await handle_personal(body.text or "", ctx)
+            if not result.get("ignored"):
+                await save_personal_list(db, uid, ctx.list, fresh["revision"])
     return clean(result | {"logged": not result.get("ignored"), "space_id": body.space_id, "user_id": uid})
+
+
+class ListQueryIn(BaseModel):
+    query: str
+
+
+class ListQuantityIn(BaseModel):
+    quantity: int
+
+
+class PhoneBody(BaseModel):
+    phone: str
+
+
+class PhoneCodeBody(BaseModel):
+    phone: str
+    code: str
+
+
+async def _require_user(db, user_id: str):
+    user = await db.users.find_one({"_id": oid(user_id)})
+    if not user:
+        raise HTTPException(404, "User not found")
+    return user
+
+
+def _list_body(cart, user_id: str, result=None):
+    body = cart_summary(cart) | {"user_id": user_id}
+    if result is not None:
+        body["action"] = result.get("action")
+        body["result"] = result
+    return body
 
 
 @app.get("/users/{user_id}/list")
 async def get_personal_list(user_id: str):
     db = get_db()
-    if not await db.users.find_one({"_id": oid(user_id)}):
-        raise HTTPException(404, "User not found")
-    doc = await db.personal_lists.find_one({"user_id": user_id})
-    if not doc:
-        return {"user_id": user_id, "items": [], "skipped": [], "total": 0, "count": 0}
-    return clean(cart_summary(doc) | {"user_id": user_id})
+    await _require_user(db, user_id)
+    state = await load_personal_list(db, user_id)
+    return clean(_list_body(state, user_id))
+
+
+@app.post("/users/{user_id}/list")
+async def add_personal_list_item(user_id: str, body: ListQueryIn):
+    db = get_db()
+    user = await _require_user(db, user_id)
+    pantry = await _user_pantry(db, user_id)
+    query = (body.query or "").strip()
+
+    async def mutate(cart):
+        found = await kroger.search_for_list(query, user.get("zip"), pantry)
+        status = found.get("status")
+        if status != "found":
+            action = "unavailable" if status == "unavailable" else "unknown"
+            return cart, {"action": action, "query": query}
+        return add_live_product(cart, found["product"], pantry, personal=True)
+
+    cart, result = await mutate_personal_list(db, user_id, mutate)
+    return clean(_list_body(cart, user_id, result))
+
+
+@app.patch("/users/{user_id}/list/items/{product_id}")
+async def set_personal_list_item_quantity(user_id: str, product_id: str, body: ListQuantityIn):
+    db = get_db()
+    await _require_user(db, user_id)
+
+    async def mutate(cart):
+        return set_personal_list_quantity(cart, product_id, body.quantity)
+
+    cart, result = await mutate_personal_list(db, user_id, mutate)
+    if result.get("action") == "not_found":
+        raise HTTPException(404, "That item is not on your list")
+    return clean(_list_body(cart, user_id, result))
+
+
+@app.delete("/users/{user_id}/list/items/{product_id}")
+async def delete_personal_list_item(user_id: str, product_id: str):
+    db = get_db()
+    await _require_user(db, user_id)
+
+    async def mutate(cart):
+        return remove_from_personal_list(cart, product_id)
+
+    cart, result = await mutate_personal_list(db, user_id, mutate)
+    if result.get("action") == "not_found":
+        raise HTTPException(404, "That item is not on your list")
+    return clean(_list_body(cart, user_id, result))
+
+
+@app.delete("/users/{user_id}/list")
+async def clear_user_list(user_id: str):
+    db = get_db()
+    await _require_user(db, user_id)
+
+    async def mutate(cart):
+        return clear_personal_list(cart)
+
+    cart, result = await mutate_personal_list(db, user_id, mutate)
+    return clean(_list_body(cart, user_id, result))
+
+
+@app.post("/users/{user_id}/phone/start")
+async def start_phone_link(user_id: str, body: PhoneBody):
+    db = get_db()
+    await _require_user(db, user_id)
+    phone = normalize(body.phone)
+    await assert_phone_claimable(db, user_id, phone)
+    phone = await issue_code(phone)
+    return {"sent": True, "phone": phone}
+
+
+@app.post("/users/{user_id}/phone/verify")
+async def verify_phone_link(user_id: str, body: PhoneCodeBody):
+    db = get_db()
+    await _require_user(db, user_id)
+    phone = await consume_code(body.phone, body.code)
+    user = await claim_phone(db, user_id, phone)
+    return {"user_id": user_id, "phone": user.get("phone"), "name": user.get("name", "")}
 
 
 @app.get("/households/{household_id}/cart")

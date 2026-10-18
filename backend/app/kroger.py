@@ -5,6 +5,8 @@ import time
 
 import httpx
 
+from app.engine import live_search_terms, pick_live_product
+
 API = "https://api.kroger.com/v1"
 DEFAULT_ZIP = os.getenv("DEFAULT_ZIP", "98105")  # used when a user has no zip
 _stores_cache = {}  # zip -> {store name: locationId}
@@ -116,3 +118,32 @@ async def search(term: str, limit: int = 5, zip_code: str | None = None):
             return [_shape(e["raw"], e["prices"]) for e in products.values() if e["prices"]]
     except Exception:  # noqa: BLE001 - fall back to seeded data
         return None
+
+
+async def search_for_list(query, zip_code=None, pantry=None):
+    """One priced Kroger product for a shopping-list add. Does not read the seeded catalog."""
+    text = (query or "").strip()
+    if not text:
+        return {"status": "not_found", "query": text}
+    pooled = []
+    seen = set()
+    reachable = False
+    for term in live_search_terms(text):
+        results = await search(term, limit=8, zip_code=zip_code)
+        if results is None:
+            continue
+        reachable = True
+        for row in results:
+            item = to_engine(row)
+            key = str(item.get("_id") or "")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            pooled.append(item)
+        chosen = pick_live_product(text, pooled, pantry)
+        if chosen:
+            return {"status": "found", "query": text, "product": chosen}
+    if not reachable:
+        return {"status": "unavailable", "query": text}
+    return {"status": "not_found", "query": text}

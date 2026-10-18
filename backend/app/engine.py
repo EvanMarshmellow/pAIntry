@@ -230,3 +230,311 @@ def remove_from_personal_list(cart, product_id):
         return out, {"action": "not_found", "product_id": pid}
     out["items"] = kept
     return out, {"action": "removed", "name": removed_name, "product_id": pid}
+
+
+# --- Pantry food-group mix (MyPlate-style, serving-based) ---
+
+FOOD_GROUPS = ("vegetables", "fruits", "grains", "proteins_dairy", "sweets_fats")
+
+SERVING_G = {
+    "vegetables": 85,
+    "fruits": 120,
+    "grains": 30,
+    "proteins_dairy": 85,
+    "sweets_fats": 15,
+}
+
+_PACKAGE_UNITS = frozenset({"bag", "tub", "jug", "can", "block", "item", "bar"})
+
+_FRUIT_KW = (
+    "banana", "apple", "berry", "blueberr", "strawberr", "raspberr", "grape", "orange", "juice",
+    "mango", "peach", "pear", "melon", "pineapple", "avocado",
+)
+_VEG_KW = (
+    "spinach", "broccoli", "carrot", "onion", "marinara", "tomato", "lettuce", "kale", "pepper",
+    "celery", "cucumber", "zucchini", "squash", "vegetable", "salad", "edamame",
+)
+_SWEETS_FATS_KW = (
+    "almond butter", "sunflower seed butter", "seed butter", "nut butter", "frosted", "cookie dough",
+    "margarine", "mayo", "shortening", "olive oil", "vegetable oil", "canola oil",
+)
+_PROTEIN_DAIRY_KW = (
+    "black bean", "chickpea", "lentil", "bean", "tuna", "chicken", "salmon", "turkey", "beef",
+    "egg", "milk", "yogurt", "cheese", "tofu", "hummus", "protein bar", "whey", "almond", "nut",
+    "edamame", "fish", "pork", "ham", "sausage", "cottage",
+)
+_GRAIN_KW = (
+    "rice", "pasta", "oat", "bread", "tortilla", "granola", "cereal", "wheat", "spaghetti",
+    "quinoa", "barley", "couscous", "cracker", "bagel", "muffin",
+)
+
+
+def _contains_any(text, keywords):
+    t = (text or "").lower()
+    return any(k in t for k in keywords)
+
+
+def pantry_food_group(product=None, *, name=None, category=None):
+    """Map a catalog product or plain name to one of FOOD_GROUPS (or None to exclude)."""
+    if product:
+        name = product.get("name") or name or ""
+        category = product.get("category") or category
+    name = name or ""
+    cat = (category or "").lower()
+    nut = (product or {}).get("nutrition_per_serving") or {}
+
+    if _contains_any(name, ("protein bar", "whey protein", "whey")):
+        return "proteins_dairy"
+    if _contains_any(name, _SWEETS_FATS_KW):
+        return "sweets_fats"
+    if _contains_any(name, _FRUIT_KW):
+        if "juice" in name.lower() and "vegetable" in name.lower():
+            pass
+        else:
+            return "fruits"
+    if _contains_any(name, _VEG_KW):
+        return "vegetables"
+    if _contains_any(name, _PROTEIN_DAIRY_KW):
+        return "proteins_dairy"
+    if _contains_any(name, _GRAIN_KW):
+        return "grains"
+
+    if cat == "produce":
+        return "vegetables"
+    if cat in ("meat_seafood", "protein_alt", "dairy_eggs"):
+        return "proteins_dairy"
+    if cat in ("bakery", "breakfast"):
+        if float(nut.get("sugar_g") or 0) >= 8 or "frosted" in name.lower():
+            return "sweets_fats"
+        return "grains"
+    if cat == "pantry":
+        if _contains_any(name, _GRAIN_KW) or float(nut.get("carbs_g") or 0) >= 25:
+            return "grains"
+        if float(nut.get("protein_g") or 0) >= 6:
+            return "proteins_dairy"
+        if float(nut.get("sugar_g") or 0) >= 8 or float(nut.get("fat_g") or 0) >= 10:
+            return "sweets_fats"
+        return "grains"
+    if cat == "snacks":
+        if float(nut.get("protein_g") or 0) >= 10 or _contains_any(name, ("hummus", "almond", "nut")):
+            return "proteins_dairy"
+        return "sweets_fats"
+    if cat == "beverages":
+        if "juice" in name.lower():
+            return "fruits"
+        if "milk" in name.lower():
+            return "proteins_dairy"
+        return None
+    if cat == "frozen":
+        if _contains_any(name, _FRUIT_KW):
+            return "fruits"
+        return "vegetables"
+    return None
+
+
+def _count_item_grams(name):
+    n = (name or "").lower()
+    if "egg" in n:
+        return 50.0
+    if "banana" in n:
+        return 118.0
+    if "avocado" in n:
+        return 150.0
+    if "tortilla" in n:
+        return 45.0
+    if "bar" in n and "protein" in n:
+        return 60.0
+    return 100.0
+
+
+def package_grams(product):
+    """Estimated edible mass for one retail unit of a catalog product."""
+    if not product:
+        return 0.0
+    size = float(product.get("size") or 1)
+    unit = (product.get("unit") or "item").lower()
+    name = product.get("name") or ""
+    if unit == "oz":
+        return size * 28.3495
+    if unit == "lb":
+        return size * 453.592
+    if unit == "fl oz":
+        return size * 30.0
+    if unit == "count":
+        return size * _count_item_grams(name)
+    return size * 28.3495
+
+
+def _pantry_to_grams_direct(pantry_item):
+    """Fallback mass when there is no catalog match."""
+    qty = float(pantry_item.get("quantity") or 1)
+    unit = (pantry_item.get("unit") or "item").lower()
+    name = pantry_item.get("name") or ""
+    if unit == "lb":
+        return qty * 453.592
+    if unit == "oz":
+        return qty * 28.3495
+    if unit == "count":
+        return qty * _count_item_grams(name)
+    if unit in _PACKAGE_UNITS:
+        return qty * 150.0
+    return qty * 100.0
+
+
+def pantry_edible_grams(pantry_item, product=None):
+    """Estimated edible grams on hand for one pantry line."""
+    qty = float(pantry_item.get("quantity") or 1)
+    punit = (pantry_item.get("unit") or "item").lower()
+    if not product:
+        return _pantry_to_grams_direct(pantry_item)
+
+    pkg = package_grams(product)
+    if pkg <= 0:
+        return _pantry_to_grams_direct(pantry_item)
+
+    prod_unit = (product.get("unit") or "item").lower()
+    prod_size = float(product.get("size") or 1)
+    pname = (product.get("name") or "").lower()
+
+    if punit == "count" and prod_unit == "lb" and "banana" in pname:
+        return qty * _count_item_grams("banana")
+    if punit == "count" and prod_unit == "count":
+        return pkg * min(qty / prod_size, 1.0) if prod_size else qty * _count_item_grams(pname)
+    if punit == "lb" and prod_unit == "lb":
+        return pkg * (qty / prod_size) if prod_size else qty * 453.592
+    if punit in _PACKAGE_UNITS or prod_unit in _PACKAGE_UNITS:
+        return pkg * qty
+    if punit == prod_unit:
+        return pkg * (qty / prod_size) if prod_size else pkg * qty
+    return pkg * qty
+
+
+def _product_for_pantry_item(item, products):
+    pid = item.get("product_id")
+    if pid:
+        for p in products:
+            if str(p.get("_id")) == str(pid):
+                return p
+    return resolve_product(item.get("name", ""), products, pantry=None)
+
+
+def _pct(part, whole):
+    return round(part / whole * 100, 1) if whole else 0.0
+
+
+def _group_status(group, pct_servings, produce_combined_pct):
+    if group in ("vegetables", "fruits"):
+        if produce_combined_pct < 25:
+            return "low"
+        if produce_combined_pct > 45:
+            return "high"
+        return "ok"
+    if group == "grains":
+        if pct_servings < 15:
+            return "low"
+        if pct_servings > 30:
+            return "high"
+        return "ok"
+    if group == "proteins_dairy":
+        if pct_servings < 20:
+            return "low"
+        if pct_servings > 35:
+            return "high"
+        return "ok"
+    if group == "sweets_fats":
+        if pct_servings > 15:
+            return "high"
+        return "ok"
+    return "ok"
+
+
+def analyze_pantry_food_groups(pantry, products, user_id=None):
+    totals_g = {g: 0.0 for g in FOOD_GROUPS}
+    totals_serv = {g: 0.0 for g in FOOD_GROUPS}
+    totals_cal = {g: 0.0 for g in FOOD_GROUPS}
+    lines = []
+    unclassified_grams = 0.0
+
+    for item in pantry or []:
+        product = _product_for_pantry_item(item, products)
+        matched = product is not None
+        group = pantry_food_group(product) if product else pantry_food_group(name=item.get("name"))
+        grams = pantry_edible_grams(item, product)
+        if not group:
+            unclassified_grams += grams
+            lines.append({
+                "name": item.get("name"),
+                "group": None,
+                "grams_on_hand": round(grams, 1),
+                "matched_product": matched,
+            })
+            continue
+
+        totals_g[group] += grams
+        totals_serv[group] += grams / SERVING_G[group]
+
+        cal = 0.0
+        if product:
+            pkg = package_grams(product)
+            nut = product.get("nutrition_per_serving") or {}
+            cal_per = float(nut.get("calories") or 0)
+            if pkg > 0 and cal_per:
+                spp = max(1, round(pkg / SERVING_G[group]))
+                cal = (grams / pkg) * spp * cal_per
+        elif grams:
+            cal = grams * 1.5
+        totals_cal[group] += cal
+
+        lines.append({
+            "name": item.get("name"),
+            "group": group,
+            "grams_on_hand": round(grams, 1),
+            "matched_product": matched,
+        })
+
+    sum_serv = sum(totals_serv.values())
+    sum_g = sum(totals_g.values())
+    sum_cal = sum(totals_cal.values())
+
+    groups_out = {}
+    for g in FOOD_GROUPS:
+        pct_s = _pct(totals_serv[g], sum_serv)
+        groups_out[g] = {
+            "pct_servings": pct_s,
+            "pct_grams": _pct(totals_g[g], sum_g),
+            "pct_calories": _pct(totals_cal[g], sum_cal),
+            "grams_on_hand": round(totals_g[g], 1),
+            "serving_equiv": round(totals_serv[g], 2),
+            "status": "ok",
+        }
+
+    produce_combined = groups_out["vegetables"]["pct_servings"] + groups_out["fruits"]["pct_servings"]
+    for g in FOOD_GROUPS:
+        groups_out[g]["status"] = _group_status(g, groups_out[g]["pct_servings"], produce_combined)
+
+    hints = []
+    if produce_combined < 25:
+        hints.append("Produce (vegetables + fruits) is below 25% of serving equivalents — stock more fresh items.")
+    elif produce_combined > 45:
+        hints.append("Produce is above 45% of serving equivalents — balance with grains and protein/dairy.")
+    if groups_out["sweets_fats"]["pct_servings"] > 15:
+        hints.append("Sweets/fats exceed 15% — consider shifting toward whole grains and lean protein.")
+    if groups_out["proteins_dairy"]["pct_servings"] < 20:
+        hints.append("Protein/dairy is under 20% — add beans, dairy, eggs, or lean meat.")
+    if groups_out["grains"]["pct_servings"] < 15:
+        hints.append("Grains are under 15% — rice, oats, or bread would round out the pantry.")
+
+    return {
+        "user_id": user_id,
+        "primary_metric": "servings",
+        "groups": groups_out,
+        "combined_produce_pct_servings": round(produce_combined, 1),
+        "pantry_balance_hint": hints,
+        "lines": lines,
+        "unclassified_grams": round(unclassified_grams, 1),
+        "assumptions": [
+            "Percentages use USDA-style serving gram weights per group.",
+            "Pantry mass is estimated from catalog package size and pantry quantity/units.",
+            "Pantry mix reflects what you have on hand, not daily intake.",
+        ],
+    }

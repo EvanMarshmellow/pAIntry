@@ -11,7 +11,7 @@ from app import kroger
 from app.auth import router as auth_router
 from app.agent import CartContext, handle as handle_agent
 from app.db import close, connect, get_db
-from app.engine import analyze, cart_summary
+from app.engine import analyze, analyze_pantry_food_groups, cart_summary
 from app.grok import explain
 from app.personal_agent import PersonalContext, handle as handle_personal
 from app.receipt_agent import handle_receipt
@@ -98,6 +98,16 @@ async def get_user(user_id: str):
 async def get_pantry(user_id: str):
     items = await get_db().pantry_items.find({"user_id": user_id}).sort("expires_at", 1).to_list(500)
     return clean(items)
+
+
+@app.get("/users/{user_id}/pantry/food-groups")
+async def pantry_food_groups(user_id: str):
+    db = get_db()
+    if not await db.users.find_one({"_id": oid(user_id)}):
+        raise HTTPException(404, "User not found")
+    pantry = await _user_pantry(db, user_id)
+    products = await db.products.find().to_list(500)
+    return analyze_pantry_food_groups(pantry, products, user_id=user_id)
 
 
 @app.post("/users/{user_id}/pantry", status_code=201)

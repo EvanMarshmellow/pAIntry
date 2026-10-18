@@ -68,6 +68,7 @@ Docs: http://localhost:8000/docs
 | `GET` | `/products?category=` | Sample catalog. |
 | `GET` | `/users/{id}` | Profile, budget, allergies, goals, `phone`. |
 | `GET` | `/users/{id}/pantry` | Sorted by `expires_at`. |
+| `GET` | `/users/{id}/pantry/food-groups` | Five-group pantry mix (serving-equivalent % primary; grams/calories secondary). No writes. |
 | `POST` | `/users/{id}/pantry` | Body: `name`, optional `quantity`, `unit`, `product_id`, `expires_at`. |
 | `GET` | `/users/{id}/savings` | Sum of `savings_ledger.amount` for that user. |
 | `POST` | `/convince-me` | Body: `user_id` plus `product_id`, `barcode`, or `query`. `log: false` (or `?log=false`) skips writes. |

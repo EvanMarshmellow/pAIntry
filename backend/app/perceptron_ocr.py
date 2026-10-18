@@ -1,6 +1,7 @@
 """Receipt OCR via Perceptron Mk1.5 structured outputs."""
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -10,6 +11,8 @@ RECEIPT_SCHEMA = {
     "type": "object",
     "properties": {
         "store": {"type": ["string", "null"]},
+        "store_address": {"type": ["string", "null"]},
+        "zip": {"type": ["string", "null"]},
         "date": {"type": ["string", "null"]},
         "items": {
             "type": "array",
@@ -33,8 +36,9 @@ OCR_PROMPT = (
     "This is a grocery store receipt or a photo of purchased grocery items. "
     "Extract each line item in reading order with product name and price as printed. "
     "Preserve spelling, currency symbols, and decimal separators exactly. "
-    "Use null for unreadable fields; do not guess. Include store name and purchase date "
-    "only if clearly visible. Return an empty items array if no grocery lines are visible."
+    "Use null for unreadable fields; do not guess. Include store name, store address, "
+    "the store's 5-digit ZIP code, and purchase date only if clearly visible. "
+    "Return an empty items array if no grocery lines are visible."
 )
 
 _MIME_EXT = {
@@ -95,7 +99,10 @@ def extract_receipt_items(image_bytes: bytes, mime_type: str = "image/jpeg") -> 
         result = json.loads(raw)
         validate(instance=result, schema=RECEIPT_SCHEMA)
         items = [i for i in result.get("items") or [] if i.get("product")]
-        return {"store": result.get("store"), "date": result.get("date"), "items": items}
+        m = re.search(r"\b(\d{5})(?:-\d{4})?\b", result.get("zip") or result.get("store_address") or "")
+        return {"store": result.get("store"), "date": result.get("date"),
+                "store_address": result.get("store_address"),
+                "zip": m.group(1) if m else None, "items": items}
     except OcrError:
         raise
     except Exception as e:

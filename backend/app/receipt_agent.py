@@ -77,6 +77,11 @@ async def handle_receipt(
                 "ignored": False,
                 "receipt": True,
             }
+        # Save the store's ZIP from the receipt so live prices use the user's nearest stores
+        if ocr.get("zip") and ocr["zip"] != user.get("zip"):
+            await db.users.update_one({"_id": user["_id"]}, {"$set": {"zip": ocr["zip"]}})
+            user["zip"] = ocr["zip"]
+            log.info("receipt zip saved: %s", ocr["zip"])
         lines = match_ocr_lines(ocr, products)
         if not lines:
             return {

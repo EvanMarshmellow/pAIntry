@@ -1,0 +1,247 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e4]:
+    - generic [ref=e9]: Mise en place
+    - generic [ref=e11]:
+      - generic [ref=e12]: Stocking the pantry
+      - generic [ref=e13]: 0%
+  - banner [ref=e14]:
+    - link "PAINTRY YOUR KITCHEN, KNOWN" [ref=e15] [cursor=pointer]:
+      - /url: "#top"
+      - generic [ref=e19]:
+        - generic [ref=e20]: PAINTRY
+        - generic [ref=e21]: YOUR KITCHEN, KNOWN
+    - navigation [ref=e22]:
+      - link "Pantry Pantry" [ref=e23] [cursor=pointer]:
+        - /url: "#gate"
+        - generic [ref=e24]: Pantry
+        - generic [ref=e25]: Pantry
+      - link "Market Market" [ref=e26] [cursor=pointer]:
+        - /url: "#pathways"
+        - generic [ref=e27]: Market
+        - generic [ref=e28]: Market
+      - link "Recipe Recipe" [ref=e29] [cursor=pointer]:
+        - /url: "#lessons"
+        - generic [ref=e30]: Recipe
+        - generic [ref=e31]: Recipe
+      - link "Aftertaste Aftertaste" [ref=e32] [cursor=pointer]:
+        - /url: "#eternity"
+        - generic [ref=e33]: Aftertaste
+        - generic [ref=e34]: Aftertaste
+    - button "Menu" [ref=e35] [cursor=pointer]
+  - generic [ref=e38]:
+    - generic [ref=e39]:
+      - generic [ref=e40]:
+        - generic [ref=e41]: Chapter 00 — The Night Kitchen
+        - heading [level=1] [ref=e43]:
+          - generic "Every kitchen" [ref=e44]:
+            - generic [ref=e46]: Every
+            - generic [ref=e48]: kitchen
+          - generic "knows what" [ref=e49]:
+            - generic [ref=e51]: knows
+            - generic [ref=e53]: what
+          - generic "it needs." [ref=e54]:
+            - generic [ref=e56]: it
+            - generic [ref=e58]: needs.
+        - paragraph [ref=e59]: An AI grocery assistant that knows your pantry, your body and your budget, and tells you what to buy, where, and whether it is worth it.
+      - generic [ref=e61]:
+        - generic [ref=e62]: Scroll to cook
+        - generic [ref=e65]:
+          - generic [ref=e66] [cursor=pointer]:
+            - generic [ref=e67]: "01"
+            - generic [ref=e68]:
+              - generic [ref=e69]: Pantry capture
+              - paragraph [ref=e70]: Snap the fridge or a receipt. Every item and its expiry, found.
+          - generic [ref=e71] [cursor=pointer]:
+            - generic [ref=e72]: "02"
+            - generic [ref=e73]:
+              - generic [ref=e74]: Convince me
+              - paragraph [ref=e75]: Buy, skip or swap, with the reasons and the dollars saved.
+          - generic [ref=e76] [cursor=pointer]:
+            - generic [ref=e77]: "03"
+            - generic [ref=e78]:
+              - generic [ref=e79]: Smart list
+              - paragraph [ref=e80]: Nutrition gaps become a budget-aware list across three stores.
+          - generic [ref=e81] [cursor=pointer]:
+            - generic [ref=e82]: "04"
+            - generic [ref=e83]:
+              - generic [ref=e84]: Group cart
+              - paragraph [ref=e85]: Roommates add, duplicates merge, the cost splits itself.
+      - 'link "Preview: the kitchen, after hours" [ref=e86] [cursor=pointer]':
+        - /url: "#pathways"
+        - generic [ref=e88]:
+          - generic [ref=e89]: Prep
+          - generic [ref=e90]: The kitchen — after hours
+      - generic: Mise en place
+    - generic [ref=e91]:
+      - generic [ref=e92]:
+        - generic [ref=e93]: 01 — The Pantry
+        - generic [ref=e95]: Garde manger
+      - generic [ref=e96]:
+        - heading "A full fridge, an empty plan, one list that knows." [level=2] [ref=e97]:
+          - generic [ref=e99]: A
+          - generic [ref=e101]: full
+          - generic [ref=e103]: fridge,
+          - generic [ref=e105]: an
+          - generic [ref=e107]: empty
+          - generic [ref=e109]: plan,
+          - generic [ref=e111]: one
+          - generic [ref=e113]: list
+          - generic [ref=e115]: that
+          - generic [ref=e117]: knows.
+        - generic [ref=e118]:
+          - paragraph [ref=e119]: "pAIntry starts where most grocery runs go wrong: at a fridge nobody has really looked into. Text a photo of it, or of a receipt, and the pantry fills itself with items, quantities and expiry dates. You confirm them in one tap."
+          - paragraph [ref=e120]: From there the kitchen does the thinking. Nutrition gaps turn into a shopping list, the list is priced across three stores, and every reason on every card links back to the data it came from. The code does the math; the model only writes the words.
+          - link "Open the pantry" [ref=e121] [cursor=pointer]:
+            - /url: "#pathways"
+      - generic [ref=e126]:
+        - generic [ref=e127]:
+          - generic [ref=e128]: "05"
+          - text: Features
+        - generic [ref=e129]:
+          - generic [ref=e130]: "03"
+          - text: Stores compared
+        - generic [ref=e131]:
+          - generic [ref=e132]: <3
+          - text: Minute demo
+        - generic [ref=e133]:
+          - generic [ref=e134]: $
+          - text: Saved, every week
+    - generic [ref=e135]:
+      - generic [ref=e136]:
+        - generic [ref=e137]: 02 — Three Kitchens
+        - generic [ref=e139]: Le marche
+      - generic [ref=e140]:
+        - article [ref=e141] [cursor=pointer]:
+          - generic [ref=e146]:
+            - generic [ref=e147]: Pantry
+            - generic [ref=e148]: Capture
+          - generic [ref=e149]:
+            - generic [ref=e150]: What you already have
+            - generic [ref=e151]: 01 / 03
+        - article [ref=e152] [cursor=pointer]:
+          - generic [ref=e157]:
+            - generic [ref=e158]: Market
+            - generic [ref=e159]: Compare
+          - generic [ref=e160]:
+            - generic [ref=e161]: Where it costs less
+            - generic [ref=e162]: 02 / 03
+        - article [ref=e163] [cursor=pointer]:
+          - generic [ref=e168]:
+            - generic [ref=e169]: Table
+            - generic [ref=e170]: Decide
+          - generic [ref=e171]:
+            - generic [ref=e172]: What is worth it
+            - generic [ref=e173]: 03 / 03
+    - generic [ref=e174]:
+      - generic [ref=e175]:
+        - generic [ref=e176]: 03 — The Recipe
+        - generic [ref=e178]: Recette
+      - generic [ref=e179]:
+        - heading "Five steps. Three minutes. One smarter cart." [level=2] [ref=e180]:
+          - generic [ref=e182]: Five
+          - generic [ref=e184]: steps.
+          - generic [ref=e186]: Three
+          - generic [ref=e188]: minutes.
+          - generic [ref=e190]: One
+          - generic [ref=e192]: smarter
+          - generic [ref=e194]: cart.
+        - paragraph [ref=e195]: Each step is a moment in a real week, not a feature list. You open the fridge, plan the week, shop with friends, stand in the aisle, and check out knowing what you saved.
+      - generic [ref=e196]:
+        - generic [ref=e197] [cursor=pointer]:
+          - generic [ref=e198]: "01"
+          - heading [level=3] [ref=e199]:
+            - text: Pantry Capture
+            - emphasis [ref=e200]: Snap
+          - paragraph [ref=e201]: Text a fridge photo or a receipt. Vision finds the items and the expiry dates.
+          - generic [ref=e202]: Vision
+        - generic [ref=e203] [cursor=pointer]:
+          - generic [ref=e204]: "02"
+          - heading [level=3] [ref=e205]:
+            - text: Smart List
+            - emphasis [ref=e206]: Plan
+          - paragraph [ref=e207]: Nutrition gaps become a budget-aware list, priced across three stores.
+          - generic [ref=e208]: Engine
+        - generic [ref=e209] [cursor=pointer]:
+          - generic [ref=e210]: "03"
+          - heading [level=3] [ref=e211]:
+            - text: Group Cart
+            - emphasis [ref=e212]: Share
+          - paragraph [ref=e213]: Roommates add to the group chat. Duplicates merge and the cost splits.
+          - generic [ref=e214]: iMessage
+        - generic [ref=e215] [cursor=pointer]:
+          - generic [ref=e216]: "04"
+          - heading [level=3] [ref=e217]:
+            - text: Convince Me
+            - emphasis [ref=e218]: Ask
+          - paragraph [ref=e219]: In the aisle, ask “is this worth it?” and get buy, skip or swap, with the savings.
+          - generic [ref=e220]: Voice
+        - generic [ref=e221] [cursor=pointer]:
+          - generic [ref=e222]: "05"
+          - heading [level=3] [ref=e223]:
+            - text: Money Saved
+            - emphasis [ref=e224]: Keep
+          - paragraph [ref=e225]: A running ledger of swaps and rescued food, and what it added up to this week.
+          - generic [ref=e226]: Ledger
+    - generic [ref=e227]:
+      - generic [ref=e228]: Chapter 04 — Aftertaste
+      - heading "Aftertaste" [level=2] [ref=e229]:
+        - generic [ref=e231]: Aftertaste
+      - paragraph [ref=e232]: "The kitchen keeps learning after you close the fridge. Come back whenever the week gets busy: the same shelves, never the same list."
+      - link "Start your pantry" [ref=e233] [cursor=pointer]:
+        - /url: "#top"
+    - contentinfo [ref=e238]:
+      - generic [ref=e239]:
+        - paragraph [ref=e244]: An AI grocery assistant that knows your kitchen, your body and your budget. Built at DubHacks '26 for the Visa track, Reimagine Shopping.
+        - generic [ref=e245]:
+          - heading "Chapters" [level=4] [ref=e246]
+          - list [ref=e247]:
+            - listitem [ref=e248]:
+              - link "The Pantry" [ref=e249] [cursor=pointer]:
+                - /url: "#gate"
+            - listitem [ref=e250]:
+              - link "Three Kitchens" [ref=e251] [cursor=pointer]:
+                - /url: "#pathways"
+            - listitem [ref=e252]:
+              - link "The Recipe" [ref=e253] [cursor=pointer]:
+                - /url: "#lessons"
+            - listitem [ref=e254]:
+              - link "Aftertaste" [ref=e255] [cursor=pointer]:
+                - /url: "#eternity"
+        - generic [ref=e256]:
+          - heading "Features" [level=4] [ref=e257]
+          - list [ref=e258]:
+            - listitem [ref=e259]:
+              - link "Convince Me" [ref=e260] [cursor=pointer]:
+                - /url: "#lessons"
+            - listitem [ref=e261]:
+              - link "Pantry capture" [ref=e262] [cursor=pointer]:
+                - /url: "#lessons"
+            - listitem [ref=e263]:
+              - link "Smart list" [ref=e264] [cursor=pointer]:
+                - /url: "#lessons"
+            - listitem [ref=e265]:
+              - link "Group cart" [ref=e266] [cursor=pointer]:
+                - /url: "#lessons"
+        - generic [ref=e267]:
+          - heading "Trust" [level=4] [ref=e268]
+          - list [ref=e269]:
+            - listitem [ref=e270]:
+              - link "“Why this?”" [ref=e271] [cursor=pointer]:
+                - /url: "#top"
+            - listitem [ref=e272]:
+              - link "Private health data" [ref=e273] [cursor=pointer]:
+                - /url: "#top"
+            - listitem [ref=e274]:
+              - link "Not medical advice" [ref=e275] [cursor=pointer]:
+                - /url: "#top"
+      - generic [ref=e276]:
+        - generic [ref=e277]: © 2026 pAIntry — working name Cartwise
+        - generic [ref=e278]: Code does the math
+        - generic [ref=e279]: WebGL · Onest · DubHacks '26
+  - generic [ref=e280]:
+    - button "The Hidden Gate" [ref=e281] [cursor=pointer]
+    - button "The Sanmon" [ref=e283] [cursor=pointer]
+    - button "Still Gardens" [ref=e285] [cursor=pointer]
+    - button "Sacred Craft" [ref=e287] [cursor=pointer]
+    - button "Afterlight" [ref=e289] [cursor=pointer]
+    - button "Colophon" [ref=e291] [cursor=pointer]

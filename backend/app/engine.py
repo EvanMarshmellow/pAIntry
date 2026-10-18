@@ -616,10 +616,26 @@ def add_to_personal_list(cart, product, pantry):
     return out, {"action": "added", **line}
 
 
+def move_personal_line_to_end(cart, product_id):
+    """Put one personal-list line last so "that" means the item just added."""
+    out = {
+        "items": [dict(line) for line in (cart or {}).get("items") or []],
+        "skipped": list((cart or {}).get("skipped") or []),
+    }
+    pid = str(product_id)
+    idx = next((i for i, line in enumerate(out["items"]) if str(line.get("product_id")) == pid), None)
+    if idx is None:
+        return out
+    out["items"].append(out["items"].pop(idx))
+    return out
+
+
 def add_live_product(cart, product, pantry, user_id=None, *, personal=False):
     """Repeat retail name bumps quantity. Otherwise pantry-skip or insert with cheapest store and price."""
     updated, bumped = bump_repeat_line(cart, product, None if personal else user_id)
     if bumped:
+        if personal:
+            updated = move_personal_line_to_end(updated, bumped.get("product_id"))
         return updated, bumped
     if personal:
         return add_to_personal_list(cart, product, pantry)
@@ -697,24 +713,47 @@ def move_personal_list_to_pantry(cart, pantry):
     }
 
 
+def move_list_line_into_pantry(cart, pantry, line):
+    """Move one known list line into the pantry."""
+    qty = float((line or {}).get("quantity") or 1)
+    pantry, result = add_personal_pantry_item(
+        pantry, (line or {}).get("name") or "", quantity=qty, product_id=(line or {}).get("product_id"))
+    cart, _removed = remove_from_personal_list(cart, (line or {}).get("product_id"))
+    return cart, pantry, {**result, "from_list": True, "list_quantity": qty}
+
+
+def latest_personal_list_line(cart):
+    items = (cart or {}).get("items") or []
+    return items[-1] if items else None
+
+
+def bump_latest_personal_list_line(cart):
+    """Increase the quantity of the last personal-list line."""
+    out = {
+        "items": [dict(line) for line in (cart or {}).get("items") or []],
+        "skipped": list((cart or {}).get("skipped") or []),
+    }
+    if not out["items"]:
+        return out, {"action": "empty"}
+    line = out["items"][-1]
+    line["quantity"] = int(line.get("quantity") or 1) + 1
+    return out, {
+        "action": "quantity",
+        "name": line.get("name"),
+        "product_id": line.get("product_id"),
+        "quantity": line["quantity"],
+        "store": line.get("store"),
+        "price": line.get("price"),
+    }
+
+
 def add_spoken_personal_pantry_item(cart, pantry, query, products=None):
-    """Move a matching list line, or add the spoken name at quantity 1."""
+    """Move a matching list line. A miss does not store the spoken words."""
+    del products
     line = list_line_for_query(cart, query)
-    if line:
-        qty = float(line.get("quantity") or 1)
-        pantry, result = add_personal_pantry_item(
-            pantry, line.get("name") or query, quantity=qty, product_id=line.get("product_id"))
-        cart, _removed = remove_from_personal_list(cart, line.get("product_id"))
-        return cart, pantry, {**result, "from_list": True, "list_quantity": qty}
-    product = resolve_product(query, products or [], pantry=None)
-    if product:
-        name = product.get("name") or (query or "").strip()
-        product_id = str(product.get("_id", name))
-    else:
-        name = (query or "").strip()
-        product_id = None
-    pantry, result = add_personal_pantry_item(pantry, name, quantity=1, product_id=product_id)
-    return cart, pantry, {**result, "from_list": False}
+    if not line:
+        return cart, pantry, {"action": "not_on_list", "query": query}
+    return move_list_line_into_pantry(cart, pantry, line)
 
 
 def merge_personal_lists(primary, other):

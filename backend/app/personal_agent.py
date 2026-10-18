@@ -7,10 +7,11 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from app import gemini
-from app.engine import (add_live_product, add_spoken_personal_pantry_item, analyze, cart_summary,
-                        cheapest, clear_personal_list, list_line_for_query,
-                        move_personal_list_to_pantry, remove_from_personal_list,
-                        resolve_product, split_grocery_phrases)
+from app.engine import (add_live_product, add_personal_pantry_item, add_spoken_personal_pantry_item,
+                        analyze, bump_latest_personal_list_line, cart_summary, cheapest,
+                        clear_personal_list, latest_personal_list_line, list_line_for_query,
+                        move_list_line_into_pantry, move_personal_list_to_pantry,
+                        remove_from_personal_list, resolve_product, split_grocery_phrases)
 from app.grok import engine_headline, engine_reasons
 from app.kroger import search_for_list
 
@@ -24,7 +25,8 @@ Rules:
 - If resolve_product found is false, say it wasn't found at nearby Kroger stores and do not add it.
 - If add_list_item action is skipped, say they already have that pantry item at home.
 - Call clear_list only when they want the entire list deleted. remove_list_item removes one product.
-- "add X to my pantry" and "add everything from my list to my pantry" stock the personal pantry. Do not put those phrases on the shopping list.
+- "add that to my pantry" moves the most recent list line into the personal pantry. A named food is looked up at Kroger. Never store the words "that", "this", or "it".
+- "add that to my list" increases the quantity of the most recent list line. Do not search for the word "that".
 - Short iMessage, under 5 sentences. No medical advice.
 Reply with ONLY JSON: {"reply":"your text"}"""
 TOOLS = [
@@ -251,28 +253,52 @@ _PANTRY_ONE_RE = re.compile(
     r"\badd\s+(.+?)\s+to\s+(?:my\s+)?pantry\b",
     re.I,
 )
+_PANTRY_RECENT_RE = re.compile(
+    r"\bnot\s+to\s+(?:my\s+|the\s+)?(?:list|cart)\b.*\bpantry\b",
+    re.I,
+)
+_REFERENCE_RE = re.compile(r"^(?:that|this|it)(?:\s+one)?$", re.I)
+_LIST_REFERENCE_RE = re.compile(
+    r"\b(?:add|need|get|put)\s+(?:that|this|it)(?:\s+one)?\s+(?:to|on)\s+(?:my\s+|the\s+)?(?:list|cart)\b",
+    re.I,
+)
+
+
+def _is_reference_query(query):
+    return bool(_REFERENCE_RE.match((query or "").strip()))
 
 
 def parse_pantry_move(text):
-    """Return ('all', None), ('ask', None), ('one', query), or None.
+    """Return ('all', None), ('recent', None), ('ask', None), ('one', query), or None.
 
-    Whole-list phrases are recognized before a single item name, so
-    "everything" is never stored as a food.
+    Whole-list phrases and the words that/this/it are recognized before a
+    grocery name, so those words are never stored as food.
     """
     t = _list_text(text)
     if not t or not re.search(r"\bpantry\b", t, re.I):
         return None
     if _PANTRY_ALL_RE.search(t):
         return ("all", None)
+    if _PANTRY_RECENT_RE.search(t):
+        return ("recent", None)
     match = _PANTRY_ONE_RE.search(t)
     if not match:
         return None
     query = re.sub(r"^(?:some|the)\s+", "", match.group(1).strip(), flags=re.I).strip(" .,!?")
     if not query or query.lower() in _PANTRY_ASK:
         return ("ask", None)
+    if _is_reference_query(query):
+        return ("recent", None)
     if _PANTRY_ALL_RE.search(f"add {query} to my pantry"):
         return ("all", None)
     return ("one", query)
+
+
+def parse_list_reference(text):
+    """True when "add that to my list" means the latest list line."""
+    if parse_pantry_move(text):
+        return False
+    return bool(_LIST_REFERENCE_RE.search(_list_text(text)))
 
 
 def _qty_text(quantity):
@@ -305,7 +331,7 @@ def format_pantry_move(result):
 
 
 def parse_add_queries(text):
-    if parse_pantry_move(text):
+    if parse_pantry_move(text) or parse_list_reference(text):
         return []
     t = re.sub(r"@cartwise\b", " ", text or "", flags=re.I)
     t = re.sub(r"\s+", " ", t).strip(" .,!?")
@@ -393,6 +419,28 @@ def format_list_reply(results, summary, extras=None):
     return " ".join(lines)
 
 
+async def _pantry_from_kroger(ctx: PersonalContext, query: str) -> str:
+    """Store the Kroger product. A miss does not write the spoken words."""
+    found = await ctx.find_live(query)
+    status = found.get("status")
+    if status == "unavailable":
+        return f"I can't reach Kroger right now, so I didn't add '{query}'."
+    if status != "found":
+        return f"I couldn't find '{query}' at nearby Kroger stores."
+    product = found["product"]
+    ctx.remember(product)
+    line = list_line_for_query(ctx.list, product.get("name") or query)
+    if line:
+        ctx.list, ctx.pantry, result = move_list_line_into_pantry(ctx.list, ctx.pantry, line)
+    else:
+        product_id = str(product.get("_id", product.get("name")))
+        ctx.pantry, result = add_personal_pantry_item(
+            ctx.pantry, product.get("name") or query, quantity=1, product_id=product_id)
+        result = {**result, "from_list": False}
+    ctx.results.append(result)
+    return format_pantry_move(result)
+
+
 async def fallback(text, ctx: PersonalContext) -> dict:
     summary = cart_summary(ctx.list)
     extras = []
@@ -424,13 +472,32 @@ async def fallback(text, ctx: PersonalContext) -> dict:
             ctx.list, ctx.pantry, result = move_personal_list_to_pantry(ctx.list, ctx.pantry)
             ctx.results.append(result)
             reply = format_pantry_move(result)
+        elif kind == "recent":
+            line = latest_personal_list_line(ctx.list)
+            if not line:
+                reply = "Your list is empty, so there's nothing recent to move."
+            else:
+                ctx.list, ctx.pantry, result = move_list_line_into_pantry(ctx.list, ctx.pantry, line)
+                ctx.results.append(result)
+                reply = format_pantry_move(result)
         else:
             ctx.list, ctx.pantry, result = add_spoken_personal_pantry_item(
                 ctx.list, ctx.pantry, query, ctx.products)
-            ctx.results.append(result)
-            reply = format_pantry_move(result)
+            if result.get("action") == "not_on_list":
+                reply = await _pantry_from_kroger(ctx, query)
+            else:
+                ctx.results.append(result)
+                reply = format_pantry_move(result)
         if extras:
             reply = " ".join(extras + [reply])
+        return {"reply": reply, "list": cart_summary(ctx.list), "source": "engine", "ignored": False}
+    if parse_list_reference(text):
+        ctx.list, result = bump_latest_personal_list_line(ctx.list)
+        ctx.results.append(result)
+        if result.get("action") == "empty":
+            reply = "Your list is empty. Tell me what to add, like 'add eggs to my list'."
+        else:
+            reply = format_list_reply(ctx.results, cart_summary(ctx.list), extras)
         return {"reply": reply, "list": cart_summary(ctx.list), "source": "engine", "ignored": False}
     if parse_clear(text):
         ctx.list, result = clear_personal_list(ctx.list)
@@ -483,7 +550,7 @@ def _parse_reply(text):
 async def handle(text, ctx: PersonalContext) -> dict:
     if not is_personal_intent(text):
         return {"reply": None, "list": cart_summary(ctx.list), "source": "engine", "ignored": True}
-    if parse_clear(text) or parse_pantry_move(text) or not gemini.api_key():
+    if parse_clear(text) or parse_pantry_move(text) or parse_list_reference(text) or not gemini.api_key():
         return await fallback(text, ctx)
     msgs = [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"{ctx.user_name} says: {text}"}]

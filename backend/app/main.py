@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 import re
 from datetime import datetime, timedelta, timezone
@@ -7,22 +8,21 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app import kroger
+from app import kroger, live_catalog
 from app.auth import router as auth_router
 from app.agent import CartContext, handle as handle_agent
 from app.db import close, connect, get_db
-from app.engine import analyze, cart_summary
+from app.engine import analyze, analyze_pantry_food_groups, cart_summary
 from app.grok import explain
 from app.personal_agent import PersonalContext, handle as handle_personal
 from app.receipt_agent import handle_receipt
 from app.receipt_flow import match_ocr_lines, new_session, start_confirm_reply
 
-MAYA_ID = ObjectId("665f00000000000000000001")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect()
+    asyncio.create_task(live_catalog.refresh(get_db(), None))  # warm live prices
     yield
     await close()
 
@@ -100,12 +100,36 @@ async def get_pantry(user_id: str):
     return clean(items)
 
 
+@app.get("/users/{user_id}/pantry/food-groups")
+async def pantry_food_groups(user_id: str):
+    db = get_db()
+    if not await db.users.find_one({"_id": oid(user_id)}):
+        raise HTTPException(404, "User not found")
+    pantry = await _user_pantry(db, user_id)
+    products = await db.products.find().to_list(500)
+    return analyze_pantry_food_groups(pantry, products, user_id=user_id)
+
+
 @app.post("/users/{user_id}/pantry", status_code=201)
 async def add_pantry_item(user_id: str, item: PantryItemIn):
+    db = get_db()
+    if not await db.users.find_one({"_id": oid(user_id)}):
+        raise HTTPException(404, "User not found")
     doc = item.model_dump() | {"user_id": user_id, "added_at": datetime.now(timezone.utc)}
-    res = await get_db().pantry_items.insert_one(doc)
+    res = await db.pantry_items.insert_one(doc)
     doc["_id"] = res.inserted_id
     return clean(doc)
+
+
+@app.delete("/users/{user_id}/pantry/{item_id}")
+async def delete_pantry_item(user_id: str, item_id: str):
+    db = get_db()
+    if not await db.users.find_one({"_id": oid(user_id)}):
+        raise HTTPException(404, "User not found")
+    result = await db.pantry_items.delete_one({"_id": oid(item_id), "user_id": user_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Pantry item not found")
+    return {"deleted": True, "item_id": item_id}
 
 
 @app.get("/users/{user_id}/savings")
@@ -235,42 +259,125 @@ async def receipt_fixture(user_id: str, body: ReceiptFixtureIn):
     return {"reply": reply, "source": source, "lines": lines, "receipt_state": session["state"]}
 
 
+async def _with_real_stores(products, user):
+    """Live Kroger prices at the user's nearest stores (cached); seeded prices only as fallback."""
+    try:
+        return await live_catalog.apply(get_db(), products, (user or {}).get("zip"))
+    except Exception:
+        return products
+
+
+async def _add_missing_from_kroger(db, text, products, user):
+    """Items not in the catalog (e.g. 'ranch') are looked up live on Kroger and saved as products."""
+    from app.engine import resolve_product
+    from app.personal_agent import parse_add_queries
+    for q in parse_add_queries(text or ""):
+        if resolve_product(q, products):
+            continue
+        try:
+            results = await kroger.search(q, 3, (user or {}).get("zip"))
+        except Exception:
+            results = None
+        match = next((r for r in results or [] if r.get("prices") and r.get("upc")), None)
+        if not match:
+            continue
+        doc = kroger.to_engine(match) | {"sample_data": False, "price_source": "kroger"}
+        await db.products.replace_one({"_id": doc["_id"]}, doc, upsert=True)
+        products.append(doc)
+    return products
+
+
 async def _user_by_phone(db, sender: str):
     return await db.users.find_one({"phone": sender})
 
 
-async def _user_by_sender(db, sender: str):
-    user = await db.users.find_one({"phone": sender})
-    if user:
-        return user
-    user = await db.users.find_one({"_id": MAYA_ID})
-    if not user:
-        raise HTTPException(404, "User not found")
-    return user
-
-
-async def _household_for(db, uid: str, space_id: str):
+async def _household_for_space(db, space_id: str, sender: str, user):
+    """One household per Photon space. Never reuse another chat's household."""
+    now = datetime.now(timezone.utc)
     household = await db.households.find_one({"space_id": space_id})
+    uid = str(user["_id"]) if user else None
     if not household:
-        household = await db.households.find_one({"members": uid})
-    if not household:
-        household = await db.households.find_one({})
-    if not household:
-        raise HTTPException(404, "Household not found")
-    if not household.get("space_id"):
-        await db.households.update_one({"_id": household["_id"]}, {"$set": {"space_id": space_id}})
-        household["space_id"] = space_id
+        doc = {
+            "space_id": space_id,
+            "members": [uid] if uid else [],
+            "phones": [sender] if sender else [],
+            "created_at": now,
+        }
+        res = await db.households.insert_one(doc)
+        doc["_id"] = res.inserted_id
+        return doc
+    add = {}
+    phones = [str(p) for p in household.get("phones") or []]
+    members = [str(m) for m in household.get("members") or []]
+    if sender and sender not in phones:
+        add["phones"] = sender
+    if uid and uid not in members:
+        add["members"] = uid
+    if add:
+        await db.households.update_one({"_id": household["_id"]}, {"$addToSet": add})
+        if "phones" in add:
+            household.setdefault("phones", []).append(sender)
+        if "members" in add:
+            household.setdefault("members", []).append(uid)
     return household
+
+
+async def _replace_group_pantry(db, space_id: str, household_id: str, items: list, now):
+    await db.group_pantry_items.delete_many({"space_id": space_id})
+    docs = []
+    for item in items or []:
+        doc = {k: v for k, v in item.items() if k != "_id"}
+        doc["space_id"] = space_id
+        doc["household_id"] = household_id
+        doc.setdefault("unit", "item")
+        doc.setdefault("quantity", 1)
+        doc.setdefault("added_at", now)
+        docs.append(doc)
+    if docs:
+        await db.group_pantry_items.insert_many(docs)
+
+
+def _group_cart_from(doc, space_id: str, household_id: str):
+    if not doc:
+        return {"items": [], "skipped": []}, {
+            "space_id": space_id, "household_id": household_id, "items": [], "skipped": []}
+    return {"items": list(doc.get("items") or []), "skipped": list(doc.get("skipped") or [])}, doc
+
+
+async def _save_group_cart(db, space_id: str, household_id: str, cart: dict, now):
+    await db.group_carts.update_one(
+        {"space_id": space_id},
+        {"$set": {"space_id": space_id, "household_id": household_id,
+                  "items": cart.get("items") or [], "skipped": cart.get("skipped") or [],
+                  "updated_at": now}},
+        upsert=True)
+
+
 @app.post("/agent/message")
 async def agent_message(body: AgentMessageIn):
     db = get_db()
-    user = await _user_by_sender(db, body.sender)
-    uid = str(user["_id"])
-    user_pantry = await _user_pantry(db, uid)
-    week_spent = await _week_spent(db, uid)
-    products = await db.products.find({}).to_list(500)
-    list_doc = await db.personal_lists.find_one({"user_id": uid}) or {"user_id": uid, "items": [], "skipped": []}
-    personal_list = {"items": list(list_doc.get("items") or []), "skipped": list(list_doc.get("skipped") or [])}
+    user = await _user_by_phone(db, body.sender)
+    uid = str(user["_id"]) if user else None
+    actor = uid or body.sender
+    user_name = (user or {}).get("name") or body.sender or "Roommate"
+    household = await _household_for_space(db, body.space_id, body.sender, user)
+    hid = str(household["_id"])
+    products = await _with_real_stores(await db.products.find({}).to_list(500), user)
+    products = await _add_missing_from_kroger(db, body.text, products, user)
+    pantry = await db.group_pantry_items.find({"space_id": body.space_id}).to_list(500)
+    cart, _cart_doc = _group_cart_from(
+        await db.group_carts.find_one({"space_id": body.space_id}), body.space_id, hid)
+    week_spent = await _week_spent(db, uid) if uid else 0.0
+    member_ids = [str(m) for m in household.get("members") or []]
+    member_oids = []
+    for mid in member_ids:
+        try:
+            member_oids.append(oid(mid))
+        except HTTPException:
+            continue
+    members = await db.users.find({"_id": {"$in": member_oids}}).to_list(20) if member_oids else []
+    names = {str(m["_id"]): m.get("name", str(m["_id"])) for m in members}
+    names.setdefault(actor, user_name)
     receipt_out = await handle_receipt(
         db,
         user=user,
@@ -280,54 +387,35 @@ async def agent_message(body: AgentMessageIn):
         image_base64=body.image_base64,
         image_mime_type=body.image_mime_type,
         products=products,
-        pantry=user_pantry,
+        pantry=pantry,
         week_spent=week_spent,
-        personal_list=personal_list,
+        personal_list=None,
+        scope="group",
+        household_id=hid,
+        added_by=actor,
+        group_cart=cart,
     )
     if receipt_out:
-        if "_personal_list" in receipt_out:
-            now = datetime.now(timezone.utc)
-            plist = receipt_out.pop("_personal_list")
-            await db.personal_lists.update_one(
-                {"user_id": uid},
-                {"$set": {"user_id": uid, "items": plist.get("items") or [],
-                          "skipped": plist.get("skipped") or [], "updated_at": now}},
-                upsert=True,
-            )
-        return clean(receipt_out | {"logged": True, "space_id": body.space_id, "user_id": uid})
+        receipt_out.pop("_personal_list", None)
+        saved_cart = receipt_out.pop("_group_cart", None)
+        if saved_cart is not None:
+            await _save_group_cart(db, body.space_id, hid, saved_cart, datetime.now(timezone.utc))
+        return clean(receipt_out | {
+            "logged": True, "space_id": body.space_id, "user_id": uid, "household_id": hid})
 
     if not (body.text or "").strip() and not body.image_base64:
-        return clean({"reply": None, "ignored": True, "source": "engine", "space_id": body.space_id, "user_id": uid})
+        return clean({"reply": None, "ignored": True, "source": "engine",
+                      "space_id": body.space_id, "user_id": uid, "household_id": hid})
 
-    household = await _household_for(db, uid, body.space_id)
-    member_ids = [str(m) for m in household.get("members") or [uid]]
-    member_oids = []
-    for mid in member_ids:
-        try:
-            member_oids.append(oid(mid))
-        except HTTPException:
-            continue
-    members = await db.users.find({"_id": {"$in": member_oids}}).to_list(20)
-    names = {str(m["_id"]): m.get("name", str(m["_id"])) for m in members}
-    pantry = await db.pantry_items.find({"user_id": {"$in": member_ids}}).to_list(500)
-    cart_doc = await db.group_carts.find_one({"space_id": body.space_id}) or {
-        "space_id": body.space_id, "household_id": str(household["_id"]),
-        "items": [], "skipped": []}
-    ctx = CartContext(products=products, pantry=pantry,
-                      cart={"items": list(cart_doc.get("items") or []),
-                            "skipped": list(cart_doc.get("skipped") or [])},
-                      user_id=uid, user_name=user.get("name", "Roommate"), names=names)
+    ctx = CartContext(products=products, pantry=pantry, cart=cart,
+                      user_id=actor, user_name=user_name, names=names)
     result = await handle_agent(body.text or "", ctx)
     if not result.get("ignored"):
         now = datetime.now(timezone.utc)
-        await db.group_carts.update_one(
-            {"space_id": body.space_id},
-            {"$set": {"space_id": body.space_id, "household_id": str(household["_id"]),
-                      "items": ctx.cart.get("items") or [], "skipped": ctx.cart.get("skipped") or [],
-                      "updated_at": now}},
-            upsert=True)
+        await _save_group_cart(db, body.space_id, hid, ctx.cart, now)
+        await _replace_group_pantry(db, body.space_id, hid, ctx.pantry, now)
     return clean(result | {"logged": not result.get("ignored"), "space_id": body.space_id,
-                           "user_id": uid, "household_id": str(household["_id"])})
+                           "user_id": uid, "household_id": hid})
 
 
 @app.post("/agent/personal")
@@ -347,7 +435,8 @@ async def agent_personal(body: AgentMessageIn):
     uid = str(user["_id"])
     pantry = await _user_pantry(db, uid)
     week_spent = await _week_spent(db, uid)
-    products = await db.products.find({}).to_list(500)
+    products = await _with_real_stores(await db.products.find({}).to_list(500), user)
+    products = await _add_missing_from_kroger(db, body.text, products, user)
     list_doc = await db.personal_lists.find_one({"user_id": uid}) or {"user_id": uid, "items": [], "skipped": []}
     personal_list = {"items": list(list_doc.get("items") or []), "skipped": list(list_doc.get("skipped") or [])}
     receipt_out = await handle_receipt(
@@ -362,6 +451,7 @@ async def agent_personal(body: AgentMessageIn):
         pantry=pantry,
         week_spent=week_spent,
         personal_list=personal_list,
+        scope="user",
     )
     if receipt_out:
         plist = receipt_out.pop("_personal_list", None)
@@ -433,3 +523,14 @@ async def get_household_cart(household_id: str):
         return {"household_id": hid, "space_id": household.get("space_id"),
                 "items": [], "skipped": [], "total": 0, "count": 0}
     return clean(cart_summary(cart) | {"household_id": hid, "space_id": cart.get("space_id")})
+
+
+@app.get("/households/{household_id}/pantry")
+async def get_household_pantry(household_id: str):
+    db = get_db()
+    household = await db.households.find_one({"_id": oid(household_id)})
+    if not household:
+        raise HTTPException(404, "Household not found")
+    hid = str(household["_id"])
+    items = await db.group_pantry_items.find({"household_id": hid}).sort("expires_at", 1).to_list(500)
+    return clean(items)

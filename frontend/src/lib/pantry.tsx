@@ -16,8 +16,8 @@ export function shelfOf(item: PantryItem): ShelfId {
   return 'pantry'
 }
 
-// Finished / Trashed / Move to Fridge have no backend endpoints yet, so they
-// are kept for this session only.
+// Finished / Trashed / Move to fridge have no backend endpoints yet, so they
+// are kept for this session only. "Move to fridge" overrides shelf → fresh.
 type Overrides = {
   removed: ReadonlySet<string>
   moved: Readonly<Record<string, ShelfId>>

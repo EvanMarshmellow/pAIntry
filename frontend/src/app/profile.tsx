@@ -1,6 +1,7 @@
 import { router } from 'expo-router'
 import { StyleSheet, Text, View } from 'react-native'
 import { Button, ButtonText } from '@/components/Button'
+import { SheetHeader } from '@/components/SheetHeader'
 import { API_URL } from '@/lib/api'
 import { useCart } from '@/lib/cart'
 import { formatPrice } from '@/lib/format'
@@ -20,6 +21,7 @@ export default function Profile() {
 
   return (
     <View style={styles.sheet}>
+      <SheetHeader />
       <View style={styles.header}>
         <View style={styles.avatar}>
           <Text style={styles.initial}>{user.name.charAt(0)}</Text>

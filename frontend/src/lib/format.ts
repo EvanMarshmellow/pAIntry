@@ -15,10 +15,23 @@ export function daysUntil(iso: string) {
   return Math.ceil((new Date(iso).getTime() - Date.now()) / DAY_MS)
 }
 
-export function expiryLabel(days: number) {
-  if (days < 0) return 'Expired'
-  if (days === 0) return 'Expires today'
-  if (days === 1) return 'Expires tomorrow'
-  if (days <= 60) return `Expires in ${days} days`
-  return `Good for ${Math.round(days / 30)} months`
+/** Highlight shelf / "use soon" rows at this threshold (inclusive). */
+export const EXPIRY_URGENT_DAYS = 3
+
+function relativeDays(days: number) {
+  if (days < 0) {
+    const n = Math.abs(days)
+    return `${n} day${n === 1 ? '' : 's'} ago`
+  }
+  if (days === 0) return 'today'
+  if (days === 1) return '1 day'
+  return `${days} days`
+}
+
+/** Expiration date plus remaining (or overdue) days for list rows. */
+export function expiryLabel(iso: string) {
+  const days = daysUntil(iso)
+  const when = formatDate(iso)
+  if (days < 0) return `Expired ${when} · ${relativeDays(days)}`
+  return `Expires ${when} · ${relativeDays(days)}`
 }

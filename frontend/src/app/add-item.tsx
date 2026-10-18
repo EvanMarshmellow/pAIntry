@@ -3,6 +3,7 @@ import { router } from 'expo-router'
 import { useState } from 'react'
 import { StyleSheet, Text, TextInput, View } from 'react-native'
 import { Button, ButtonText } from '@/components/Button'
+import { SheetHeader } from '@/components/SheetHeader'
 import { Segmented } from '@/components/Segmented'
 import { api } from '@/lib/api'
 import { LEFTOVER_UNIT, usePantryOverrides } from '@/lib/pantry'
@@ -14,8 +15,29 @@ const SHELF_OPTIONS = (['fresh', 'pantry', 'leftover'] as const).map((id) => ({
   label: shelves[id].label,
 }))
 
-// Typical shelf life used to prefill "expires in".
-const DEFAULT_DAYS: Record<ShelfId, string> = { fresh: '5', pantry: '180', leftover: '3' }
+// Typical shelf life used to prefill the expiration date.
+const DEFAULT_DAYS: Record<ShelfId, number> = { fresh: 5, pantry: 180, leftover: 3 }
+
+function addDays(days: number) {
+  const d = new Date()
+  d.setHours(12, 0, 0, 0)
+  d.setDate(d.getDate() + days)
+  return d
+}
+
+function toInputDate(d: Date) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function parseInputDate(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim())
+  if (!match) return null
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12)
+  return Number.isNaN(date.getTime()) ? null : date
+}
 
 export default function AddItem() {
   const user = useUser()
@@ -25,24 +47,25 @@ export default function AddItem() {
   const [quantity, setQuantity] = useState('1')
   const [unit, setUnit] = useState('item')
   // null means "use the shelf's default", so switching shelves updates it until the user edits.
-  const [days, setDays] = useState<string | null>(null)
+  const [expiresOn, setExpiresOn] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const effectiveDays = days ?? DEFAULT_DAYS[shelf]
+  const effectiveDate = expiresOn ?? toInputDate(addDays(DEFAULT_DAYS[shelf]))
+  const parsed = parseInputDate(effectiveDate)
   const qty = Number(quantity)
-  const valid = name.trim().length > 0 && qty > 0 && Number(effectiveDays) >= 0
+  const valid = name.trim().length > 0 && qty > 0 && parsed != null
 
   async function save() {
+    if (!parsed) return
     setSaving(true)
     setError(null)
     try {
-      const expires = new Date(Date.now() + Number(effectiveDays) * 24 * 60 * 60 * 1000)
       await api.addPantryItem(user._id, {
         name: name.trim(),
         quantity: qty,
         unit: shelf === 'leftover' ? LEFTOVER_UNIT : unit.trim() || 'item',
-        expires_at: expires.toISOString(),
+        expires_at: parsed.toISOString(),
       })
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
       refresh()
@@ -55,7 +78,7 @@ export default function AddItem() {
 
   return (
     <View style={styles.sheet}>
-      <Text style={styles.title}>Add to storage</Text>
+      <SheetHeader />
       <Segmented options={SHELF_OPTIONS} value={shelf} onChange={setShelf} />
 
       <TextInput
@@ -75,8 +98,16 @@ export default function AddItem() {
             <TextInput value={unit} onChangeText={setUnit} autoCapitalize="none" style={styles.input} />
           </Field>
         )}
-        <Field label="Expires in (days)">
-          <TextInput value={effectiveDays} onChangeText={setDays} keyboardType="number-pad" style={styles.input} />
+        <Field label="Expiration date">
+          <TextInput
+            value={effectiveDate}
+            onChangeText={setExpiresOn}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor={colors.faint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.input}
+          />
         </Field>
       </View>
 
@@ -99,7 +130,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 const styles = StyleSheet.create({
   sheet: { padding: 24, paddingTop: 32, gap: 16, backgroundColor: colors.bg },
-  title: { fontSize: 22, fontWeight: '700', color: colors.ink, letterSpacing: -0.3 },
   row: { flexDirection: 'row', gap: 10 },
   field: { flex: 1, gap: 6 },
   input: {

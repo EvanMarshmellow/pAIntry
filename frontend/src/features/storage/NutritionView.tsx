@@ -3,13 +3,13 @@ import type { ComponentProps, ReactNode } from 'react'
 import { ScrollView, StyleSheet, Text, View } from 'react-native'
 import { api, type PantryItem } from '@/lib/api'
 import { useCart } from '@/lib/cart'
-import { daysUntil, expiryLabel, formatPrice } from '@/lib/format'
+import { daysUntil, EXPIRY_URGENT_DAYS, expiryLabel, formatPrice } from '@/lib/format'
 import { usePantryOverrides } from '@/lib/pantry'
 import { useUser } from '@/lib/session'
 import { useAsync } from '@/lib/useAsync'
 import { colors, radius, type } from '@/theme'
 
-const USE_SOON_DAYS = 3
+const USE_SOON_DAYS = EXPIRY_URGENT_DAYS
 
 // Wireframe: "Storage-Nutrition" ([Nutrition Bar] + [Suggestion]).
 export function NutritionView({ pantry }: { pantry: PantryItem[] }) {
@@ -21,7 +21,12 @@ export function NutritionView({ pantry }: { pantry: PantryItem[] }) {
   const weeklyProteinGoal = (user.goals.protein_g_per_day ?? 0) * 7
   const useSoon = pantry
     .filter((i) => !removed.has(i._id) && i.expires_at && daysUntil(i.expires_at) <= USE_SOON_DAYS)
-    .map((i) => ({ id: i._id, name: i.name, days: daysUntil(i.expires_at!) }))
+    .map((i) => ({
+      id: i._id,
+      name: i.name,
+      expiresAt: i.expires_at!,
+      days: daysUntil(i.expires_at!),
+    }))
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
@@ -62,7 +67,9 @@ export function NutritionView({ pantry }: { pantry: PantryItem[] }) {
           useSoon.map((i) => (
             <View key={i.id} style={styles.line}>
               <Text style={type.body}>{i.name}</Text>
-              <Text style={[type.small, i.days <= 1 && styles.urgent]}>{expiryLabel(i.days)}</Text>
+              <Text style={[type.small, i.days <= EXPIRY_URGENT_DAYS && styles.urgent]}>
+                {expiryLabel(i.expiresAt)}
+              </Text>
             </View>
           ))
         )}
@@ -133,7 +140,7 @@ const styles = StyleSheet.create({
   fillOver: { backgroundColor: '#F7CAC1' },
   bigNumber: { fontSize: 28, fontWeight: '700', color: colors.greenInk, letterSpacing: -0.5 },
   line: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  urgent: { color: colors.danger, fontWeight: '600' },
+  urgent: { color: colors.danger, fontWeight: '700' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
     fontSize: 13,

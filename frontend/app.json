@@ -29,6 +29,13 @@
         {
           "cameraPermission": "Allow pAIntry to scan product barcodes."
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow pAIntry to upload receipt photos from your library.",
+          "cameraPermission": "Allow pAIntry to photograph receipts."
+        }
       ]
     ],
     "experiments": {

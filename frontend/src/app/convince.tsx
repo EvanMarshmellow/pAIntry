@@ -19,24 +19,33 @@ const SOURCE_LABEL: Record<Verdict['source'], string> = {
   engine: 'Rule-based verdict',
 }
 
+function param(value: string | string[] | undefined) {
+  if (Array.isArray(value)) return value[0]
+  return value?.trim() || undefined
+}
+
 export default function ConvinceMe() {
   const user = useUser()
   const insets = useSafeAreaInsets()
-  const { productId, barcode, query } = useLocalSearchParams<{
-    productId?: string
-    barcode?: string
-    query?: string
-  }>()
+  const params = useLocalSearchParams<{ productId?: string; barcode?: string; query?: string }>()
+  const productId = param(params.productId)
+  const barcode = param(params.barcode)
+  const query = param(params.query)
 
-  const input: ConvinceInput = productId
+  const input: ConvinceInput | null = productId
     ? { product_id: productId }
     : barcode
       ? { barcode }
-      : { query: query ?? '' }
+      : query
+        ? { query }
+        : null
 
   const result = useAsync(
-    () => api.convinceMe(user._id, input),
-    `${user._id}|${productId}|${barcode}|${query}`,
+    () =>
+      input
+        ? api.convinceMe(user._id, input)
+        : Promise.reject(new Error('No product to evaluate — try scanning again.')),
+    input ? `${user._id}|${JSON.stringify(input)}` : 'missing',
   )
 
   return (

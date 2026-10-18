@@ -20,7 +20,8 @@ export default function Scan() {
     if (scanned.current) return
     scanned.current = true
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-    router.replace({ pathname: '/convince', params: { barcode: data } })
+    // Use a query string so the barcode always lands on /convince (object params were dropping it).
+    router.replace(`/convince?barcode=${encodeURIComponent(String(data))}`)
   }
 
   if (!permission) return <View style={styles.dark} />

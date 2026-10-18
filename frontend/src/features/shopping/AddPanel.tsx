@@ -1,13 +1,16 @@
 import Ionicons from '@expo/vector-icons/Ionicons'
 import { router } from 'expo-router'
 import { memo, useCallback, useMemo, useState } from 'react'
-import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
+import { FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import { Notice } from '@/components/Notice'
 import { ProductThumb } from '@/components/ProductThumb'
 import { api, type Product } from '@/lib/api'
 import { formatPrice } from '@/lib/format'
 import { useAsync } from '@/lib/useAsync'
 import { colors, radius, type } from '@/theme'
+
+// Full-color cart from assets/elements/groceries cart.svg.
+const cartArt = require('../../../assets/elements/shopping-cart.png')
 
 type Row = {
   id: string
@@ -58,9 +61,7 @@ export function AddPanel({ onDone }: { onDone?: () => void }) {
             </Pressable>
           ) : (
             <View style={styles.hero}>
-              <View style={styles.heroBadge}>
-                <Ionicons name="basket-outline" size={36} color={colors.greenInk} />
-              </View>
+              <Image source={cartArt} style={styles.heroCart} accessibilityLabel="Shopping cart" />
               <Text style={styles.heroTitle}>Add something to your cart</Text>
               <Text style={[type.small, styles.center]}>
                 Pick a product and we&apos;ll tell you whether it&apos;s worth it.
@@ -129,15 +130,7 @@ const styles = StyleSheet.create({
   header: { gap: 16, paddingBottom: 8 },
   back: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' },
   hero: { alignItems: 'center', gap: 8, paddingVertical: 24 },
-  heroBadge: {
-    width: 80,
-    height: 80,
-    borderRadius: radius.pill,
-    backgroundColor: colors.mint,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
+  heroCart: { width: 96, height: 96, marginBottom: 8 },
   heroTitle: { fontSize: 17, fontWeight: '600', color: colors.ink },
   center: { textAlign: 'center' },
   search: {

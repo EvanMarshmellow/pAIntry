@@ -5,7 +5,8 @@ import { useState, type ComponentProps } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Notice } from '@/components/Notice'
 import type { PantryItem } from '@/lib/api'
-import { daysUntil, expiryLabel, formatDate } from '@/lib/format'
+import { daysUntil, EXPIRY_URGENT_DAYS, expiryLabel } from '@/lib/format'
+import { useGroupCart } from '@/lib/groupCart'
 import { shelfOf, usePantryOverrides } from '@/lib/pantry'
 import type { AsyncState } from '@/lib/useAsync'
 import { colors, radius, shelves, type, type ShelfId } from '@/theme'
@@ -17,6 +18,7 @@ type Props = { pantry: AsyncState<PantryItem[]> }
 // Wireframes: "Storage", "Storage-Fresh product", "Storage-Pantry", "Storage-Leftover".
 export function GroceriesView({ pantry }: Props) {
   const { removed, moved, remove, move } = usePantryOverrides()
+  const { groupCartId } = useGroupCart()
   const [shelf, setShelf] = useState<ShelfId>('fresh')
   const tint = shelves[shelf]
 
@@ -28,8 +30,17 @@ export function GroceriesView({ pantry }: Props) {
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.actions}>
         <ActionTile icon="add-circle-outline" label="Add item" onPress={() => router.push('/add-item')} />
-        <ActionTile icon="receipt-outline" label="Upload receipt" soon />
-        <ActionTile icon="people-outline" label="Group cart" soon />
+        <ActionTile
+          icon="receipt-outline"
+          label="Upload receipt"
+          onPress={() => router.push('/upload-receipt')}
+        />
+        <ActionTile
+          icon="people-outline"
+          label="Group cart"
+          footnote={groupCartId ?? undefined}
+          onPress={() => router.push('/group-cart')}
+        />
       </View>
 
       <View>
@@ -68,7 +79,15 @@ export function GroceriesView({ pantry }: Props) {
                 color={tint.card}
                 onFinished={() => remove(item._id)}
                 onTrashed={() => remove(item._id)}
-                onMoveToFridge={shelf === 'pantry' ? () => move(item._id, 'fresh') : undefined}
+                onMoveToFridge={
+                  shelf === 'pantry'
+                    ? () => {
+                        // Fridge = Fresh shelf for this session.
+                        move(item._id, 'fresh')
+                        setShelf('fresh')
+                      }
+                    : undefined
+                }
               />
             ))
           )}
@@ -81,19 +100,20 @@ export function GroceriesView({ pantry }: Props) {
 type TileProps = {
   icon: ComponentProps<typeof Ionicons>['name']
   label: string
-  soon?: boolean
+  /** Shown under the label (e.g. joined group cart ID). */
+  footnote?: string
 } & Omit<ComponentProps<typeof Pressable>, 'children' | 'style'>
 
-function ActionTile({ icon, label, soon, ...pressable }: TileProps) {
+function ActionTile({ icon, label, footnote, ...pressable }: TileProps) {
   return (
-    <Pressable
-      {...pressable}
-      disabled={soon}
-      style={({ pressed }) => [styles.tile, soon && styles.tileSoon, pressed && styles.pressed]}
-    >
-      <Ionicons name={icon} size={22} color={soon ? colors.faint : colors.greenInk} />
-      <Text style={[styles.tileLabel, soon && styles.tileLabelSoon]}>{label}</Text>
-      {soon ? <Text style={styles.soon}>Soon</Text> : null}
+    <Pressable {...pressable} style={({ pressed }) => [styles.tile, pressed && styles.pressed]}>
+      <Ionicons name={icon} size={22} color={colors.greenInk} />
+      <Text style={styles.tileLabel}>{label}</Text>
+      {footnote ? (
+        <Text style={styles.footnote} numberOfLines={1}>
+          {footnote}
+        </Text>
+      ) : null}
     </Pressable>
   )
 }
@@ -108,7 +128,7 @@ type ShelfItemProps = {
 
 function ShelfItem({ item, color, onFinished, onTrashed, onMoveToFridge }: ShelfItemProps) {
   const days = item.expires_at ? daysUntil(item.expires_at) : null
-  const urgent = days !== null && days <= 2
+  const urgent = days !== null && days <= EXPIRY_URGENT_DAYS
 
   return (
     <View style={[styles.item, { backgroundColor: color }]}>
@@ -116,10 +136,9 @@ function ShelfItem({ item, color, onFinished, onTrashed, onMoveToFridge }: Shelf
         <Text style={styles.itemName}>{item.name}</Text>
         <Text style={styles.itemMeta}>
           {item.quantity} {item.unit}
-          {item.expires_at ? ` · ${formatDate(item.expires_at)}` : ''}
         </Text>
-        {days !== null ? (
-          <Text style={[styles.itemMeta, urgent && styles.urgent]}>{expiryLabel(days)}</Text>
+        {item.expires_at ? (
+          <Text style={[styles.itemMeta, urgent && styles.urgent]}>{expiryLabel(item.expires_at)}</Text>
         ) : null}
       </View>
       <View style={styles.itemActions}>
@@ -157,10 +176,13 @@ const styles = StyleSheet.create({
     borderCurve: 'continuous',
     backgroundColor: colors.mint,
   },
-  tileSoon: { backgroundColor: colors.surface },
   tileLabel: { fontSize: 13, fontWeight: '600', color: colors.greenInk },
-  tileLabelSoon: { color: colors.muted },
-  soon: { fontSize: 11, fontWeight: '600', color: colors.faint, textTransform: 'uppercase', letterSpacing: 0.4 },
+  footnote: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.greenInk,
+    letterSpacing: 1,
+  },
   tabs: { flexDirection: 'row' },
   tab: {
     flex: 1,
@@ -194,7 +216,7 @@ const styles = StyleSheet.create({
   itemBody: { flex: 1, gap: 4 },
   itemName: { fontSize: 15, fontWeight: '600', color: colors.ink },
   itemMeta: { fontSize: 13, lineHeight: 18, color: 'rgba(18, 20, 18, 0.65)' },
-  urgent: { color: colors.danger, fontWeight: '600' },
+  urgent: { color: colors.danger, fontWeight: '700' },
   itemActions: { gap: 10, alignItems: 'flex-end', justifyContent: 'center' },
   itemActionText: { fontSize: 13, fontWeight: '700', color: colors.ink },
   pressed: { opacity: 0.6 },

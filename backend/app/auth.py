@@ -93,3 +93,45 @@ async def login_verify(body: VerifyBody):
         user = {"_id": res.inserted_id, "phone": phone, "name": ""}
         new_user = True
     return {"user_id": str(user["_id"]), "name": user.get("name", ""), "phone": phone, "new_user": new_user}
+
+
+# ---------- Supabase login (email code or Google). Data stays in MongoDB. ----------
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+
+class SupabaseBody(BaseModel):
+    access_token: str
+
+
+@router.post("/supabase")
+async def login_supabase(body: SupabaseBody):
+    """Verify a Supabase session token, then find/create the matching Mongo user."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        raise HTTPException(500, "Supabase is not configured on the server")
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(f"{SUPABASE_URL}/auth/v1/user",
+                             headers={"apikey": SUPABASE_ANON_KEY,
+                                      "Authorization": f"Bearer {body.access_token}"})
+    if r.status_code != 200:
+        raise HTTPException(401, "Invalid or expired session")
+    sb = r.json()
+    sb_id, email = sb.get("id"), (sb.get("email") or "").lower()
+    meta = sb.get("user_metadata") or {}
+    name = meta.get("full_name") or meta.get("name") or ""
+
+    db = get_db()
+    user = await db.users.find_one({"supabase_id": sb_id})
+    if not user and email:
+        user = await db.users.find_one({"email": email})
+        if user:
+            await db.users.update_one({"_id": user["_id"]}, {"$set": {"supabase_id": sb_id}})
+    new_user = False
+    if not user:
+        doc = {"supabase_id": sb_id, "email": email, "name": name,
+               "created_at": datetime.now(timezone.utc)}
+        res = await db.users.insert_one(doc)
+        user = doc | {"_id": res.inserted_id}
+        new_user = True
+    return {"user_id": str(user["_id"]), "name": user.get("name", ""), "email": email,
+            "phone": user.get("phone"), "new_user": new_user}

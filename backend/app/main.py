@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 import re
 from datetime import datetime, timedelta, timezone
@@ -7,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app import kroger
+from app import kroger, live_catalog
 from app.auth import router as auth_router
 from app.agent import CartContext, handle as handle_agent
 from app.db import close, connect, get_db
@@ -21,6 +22,7 @@ from app.receipt_flow import match_ocr_lines, new_session, start_confirm_reply
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect()
+    asyncio.create_task(live_catalog.refresh(get_db(), None))  # warm live prices
     yield
     await close()
 
@@ -257,6 +259,34 @@ async def receipt_fixture(user_id: str, body: ReceiptFixtureIn):
     return {"reply": reply, "source": source, "lines": lines, "receipt_state": session["state"]}
 
 
+async def _with_real_stores(products, user):
+    """Live Kroger prices at the user's nearest stores (cached); seeded prices only as fallback."""
+    try:
+        return await live_catalog.apply(get_db(), products, (user or {}).get("zip"))
+    except Exception:
+        return products
+
+
+async def _add_missing_from_kroger(db, text, products, user):
+    """Items not in the catalog (e.g. 'ranch') are looked up live on Kroger and saved as products."""
+    from app.engine import resolve_product
+    from app.personal_agent import parse_add_queries
+    for q in parse_add_queries(text or ""):
+        if resolve_product(q, products):
+            continue
+        try:
+            results = await kroger.search(q, 3, (user or {}).get("zip"))
+        except Exception:
+            results = None
+        match = next((r for r in results or [] if r.get("prices") and r.get("upc")), None)
+        if not match:
+            continue
+        doc = kroger.to_engine(match) | {"sample_data": False, "price_source": "kroger"}
+        await db.products.replace_one({"_id": doc["_id"]}, doc, upsert=True)
+        products.append(doc)
+    return products
+
+
 async def _user_by_phone(db, sender: str):
     return await db.users.find_one({"phone": sender})
 
@@ -332,7 +362,8 @@ async def agent_message(body: AgentMessageIn):
     user_name = (user or {}).get("name") or body.sender or "Roommate"
     household = await _household_for_space(db, body.space_id, body.sender, user)
     hid = str(household["_id"])
-    products = await db.products.find({}).to_list(500)
+    products = await _with_real_stores(await db.products.find({}).to_list(500), user)
+    products = await _add_missing_from_kroger(db, body.text, products, user)
     pantry = await db.group_pantry_items.find({"space_id": body.space_id}).to_list(500)
     cart, _cart_doc = _group_cart_from(
         await db.group_carts.find_one({"space_id": body.space_id}), body.space_id, hid)
@@ -404,7 +435,8 @@ async def agent_personal(body: AgentMessageIn):
     uid = str(user["_id"])
     pantry = await _user_pantry(db, uid)
     week_spent = await _week_spent(db, uid)
-    products = await db.products.find({}).to_list(500)
+    products = await _with_real_stores(await db.products.find({}).to_list(500), user)
+    products = await _add_missing_from_kroger(db, body.text, products, user)
     list_doc = await db.personal_lists.find_one({"user_id": uid}) or {"user_id": uid, "items": [], "skipped": []}
     personal_list = {"items": list(list_doc.get("items") or []), "skipped": list(list_doc.get("skipped") or [])}
     receipt_out = await handle_receipt(

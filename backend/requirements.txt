@@ -5,3 +5,5 @@ pymongo[srv]
 python-dotenv
 pydantic
 httpx
+perceptron>=0.4.0
+jsonschema

@@ -22,6 +22,9 @@ Not implemented: Expo `app/`, Perceptron scan, voice session, nutrition-gap list
 | [backend/app/gemini.py](backend/app/gemini.py) | OpenAI-compatible Gemini chat client (`GEMINI_API_KEY`, `GEMINI_MODEL`). |
 | [backend/app/agent.py](backend/app/agent.py) | iMessage group-cart tool loop. Tools call the engine. Regex fallback if Gemini is down. |
 | [backend/app/personal_agent.py](backend/app/personal_agent.py) | 1:1 DM grocery planner. Personal list, budget, expiring, evaluate. Regex fallback if Gemini is down. |
+| [backend/app/perceptron_ocr.py](backend/app/perceptron_ocr.py) | Receipt OCR via Perceptron Mk1.5 (`PERCEPTRON_API_KEY`). |
+| [backend/app/receipt_flow.py](backend/app/receipt_flow.py) | Receipt session state machine: pantry confirm → optional swap suggestions → buy / ignore. |
+| [backend/app/receipt_agent.py](backend/app/receipt_agent.py) | Wires OCR + sessions into `/agent/personal` and `/agent/message`. |
 | [backend/app/db.py](backend/app/db.py) | Motor client, database name, collection list, indexes. |
 | [backend/seed.py](backend/seed.py) | Drops every collection and inserts sample products, Maya, Alex, pantry, and household. |
 | [backend/test_engine.py](backend/test_engine.py) | Offline tests. No database and no API key. |
@@ -69,7 +72,8 @@ Docs: http://localhost:8000/docs
 | `GET` | `/users/{id}/savings` | Sum of `savings_ledger.amount` for that user. |
 | `POST` | `/convince-me` | Body: `user_id` plus `product_id`, `barcode`, or `query`. `log: false` (or `?log=false`) skips writes. |
 | `POST` | `/agent/message` | Group iMessage (or curl). Mutates `group_carts`. |
-| `POST` | `/agent/personal` | 1:1 DM (or curl). Mutates `personal_lists`. Unknown phone gets a signup message (no Maya default). |
+| `POST` | `/agent/personal` | 1:1 DM (or curl). Mutates `personal_lists`. Unknown phone gets a signup message (no Maya default). Optional `image_base64` + `image_mime_type` for receipt OCR. |
+| `POST` | `/users/{id}/pantry/receipt` | Debug receipt flow with JSON `ocr` fixture (no image). |
 | `GET` | `/users/{id}/list` | Personal shopping list summary. |
 | `GET` | `/households/{id}/cart` | Current group cart for that household. |
 
@@ -113,6 +117,26 @@ curl -X POST http://localhost:8000/agent/personal -H "Content-Type: application/
 
 Gemini tools: `get_pantry`, `get_budget_status`, `get_expiring`, `resolve_product`, `add_list_item`, `remove_list_item`, `get_list`, `evaluate_product`. Fallback regex in [backend/app/personal_agent.py](backend/app/personal_agent.py).
 
+### Receipt photo (DM or group)
+
+Send an **image** over iMessage (Photon sidecar) or POST `image_base64` + `image_mime_type` to `/agent/personal` or `/agent/message`. Requires `PERCEPTRON_API_KEY`. Flow is stored in `receipt_sessions` (TTL 24h) per `(user_id, space_id)`:
+
+1. OCR line items → reply **yes** to add to **your** pantry (not the whole household).
+2. Reply **yes** or **skip** for habit suggestions (engine Swap facts on catalog-matched lines).
+3. Reply **buy** to add swap alternatives to your **personal list**, or **ignore suggestion** to finish.
+
+While a session is open, text in that chat is handled by the receipt flow (not grocery intent regex).
+
+Debug without Perceptron:
+
+```powershell
+curl -X POST http://localhost:8000/users/665f00000000000000000001/pantry/receipt -H "Content-Type: application/json" -d "{\"ocr\":{\"items\":[{\"product\":\"Protein Bar Chocolate\",\"price\":\"$3.49\"}]}}"
+```
+
+Then continue via `/agent/personal` with the same `space_id` as in the fixture (`debug` by default): `yes` → `yes` → `buy`.
+
+Tests: `python test_receipt_flow.py`
+
 ## Data
 
 Database name defaults to `app`. Collections in [backend/app/db.py](backend/app/db.py):
@@ -128,6 +152,7 @@ Database name defaults to `app`. Collections in [backend/app/db.py](backend/app/
 | `savings_ledger` | Written only when the final Convince Me verdict is Swap and `savings > 0`. |
 | `group_carts` | One doc per Photon group `space_id` (use `"demo"` when curling). Written by `/agent/message`. |
 | `personal_lists` | One doc per `user_id`. Written by `/agent/personal`. Separate from group cart. |
+| `receipt_sessions` | In-progress receipt OCR flow per `(user_id, space_id)`. |
 
 `group_carts` shape:
 

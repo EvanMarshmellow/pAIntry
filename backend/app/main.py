@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 import re
 from datetime import datetime, timedelta, timezone
-
 from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import FastAPI, HTTPException
@@ -9,9 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import kroger
+from app.agent import CartContext, handle as handle_agent
 from app.db import close, connect, get_db
-from app.engine import analyze
+from app.engine import analyze, cart_summary
 from app.grok import explain
+from app.personal_agent import PersonalContext, handle as handle_personal
+from app.receipt_agent import handle_receipt
+from app.receipt_flow import match_ocr_lines, new_session, start_confirm_reply
+
+MAYA_ID = ObjectId("665f00000000000000000001")
 
 
 @asynccontextmanager
@@ -106,6 +111,16 @@ def _aware(dt):
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)  # Mongo returns naive UTC
 
 
+async def _user_pantry(db, user_id: str):
+    return await db.pantry_items.find({"user_id": user_id}).sort("expires_at", 1).to_list(500)
+
+
+async def _week_spent(db, user_id: str) -> float:
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    carts = await db.carts.find({"user_id": user_id, "created_at": {"$gte": week_ago}}).to_list(200)
+    return sum(c.get("total", 0) for c in carts)
+
+
 class ConvinceIn(BaseModel):
     user_id: str
     product_id: str | None = None
@@ -174,3 +189,239 @@ async def convince_me(body: ConvinceIn, log: bool | None = None):
                                             "product": product["name"],
                                             "alternative": result["better_alternative"]["name"], "created_at": now})
     return clean(result | {"engine": facts, "logged": True})
+
+
+class AgentMessageIn(BaseModel):
+    space_id: str
+    sender: str
+    text: str | None = None
+    image_base64: str | None = None
+    image_mime_type: str | None = None
+    message_id: str | None = None
+    space_type: str | None = None
+
+
+class ReceiptFixtureIn(BaseModel):
+    """Debug receipt flow without Perceptron (curl / tests)."""
+    ocr: dict
+    space_id: str = "debug"
+
+
+@app.post("/users/{user_id}/pantry/receipt", status_code=200)
+async def receipt_fixture(user_id: str, body: ReceiptFixtureIn):
+    db = get_db()
+    user = await db.users.find_one({"_id": oid(user_id)})
+    if not user:
+        raise HTTPException(404, "User not found")
+    products = await db.products.find({}).to_list(500)
+    lines = match_ocr_lines(body.ocr, products)
+    session = new_session(user_id, body.space_id, body.ocr, lines)
+    reply, source = await start_confirm_reply(session)
+    await db.receipt_sessions.replace_one(
+        {"user_id": user_id, "space_id": body.space_id},
+        session,
+        upsert=True,
+    )
+    return {"reply": reply, "source": source, "lines": lines, "receipt_state": session["state"]}
+
+
+async def _user_by_phone(db, sender: str):
+    return await db.users.find_one({"phone": sender})
+
+
+async def _user_by_sender(db, sender: str):
+    user = await db.users.find_one({"phone": sender})
+    if user:
+        return user
+    user = await db.users.find_one({"_id": MAYA_ID})
+    if not user:
+        raise HTTPException(404, "User not found")
+    return user
+
+
+async def _household_for(db, uid: str, space_id: str):
+    household = await db.households.find_one({"space_id": space_id})
+    if not household:
+        household = await db.households.find_one({"members": uid})
+    if not household:
+        household = await db.households.find_one({})
+    if not household:
+        raise HTTPException(404, "Household not found")
+    if not household.get("space_id"):
+        await db.households.update_one({"_id": household["_id"]}, {"$set": {"space_id": space_id}})
+        household["space_id"] = space_id
+    return household
+
+
+@app.post("/agent/message")
+async def agent_message(body: AgentMessageIn):
+    db = get_db()
+    user = await _user_by_sender(db, body.sender)
+    uid = str(user["_id"])
+    user_pantry = await _user_pantry(db, uid)
+    week_spent = await _week_spent(db, uid)
+    products = await db.products.find({}).to_list(500)
+    list_doc = await db.personal_lists.find_one({"user_id": uid}) or {"user_id": uid, "items": [], "skipped": []}
+    personal_list = {"items": list(list_doc.get("items") or []), "skipped": list(list_doc.get("skipped") or [])}
+    receipt_out = await handle_receipt(
+        db,
+        user=user,
+        user_id=uid,
+        space_id=body.space_id,
+        text=body.text,
+        image_base64=body.image_base64,
+        image_mime_type=body.image_mime_type,
+        products=products,
+        pantry=user_pantry,
+        week_spent=week_spent,
+        personal_list=personal_list,
+    )
+    if receipt_out:
+        if "_personal_list" in receipt_out:
+            now = datetime.now(timezone.utc)
+            plist = receipt_out.pop("_personal_list")
+            await db.personal_lists.update_one(
+                {"user_id": uid},
+                {"$set": {"user_id": uid, "items": plist.get("items") or [],
+                          "skipped": plist.get("skipped") or [], "updated_at": now}},
+                upsert=True,
+            )
+        return clean(receipt_out | {"logged": True, "space_id": body.space_id, "user_id": uid})
+
+    if not (body.text or "").strip() and not body.image_base64:
+        return clean({"reply": None, "ignored": True, "source": "engine", "space_id": body.space_id, "user_id": uid})
+
+    household = await _household_for(db, uid, body.space_id)
+    member_ids = [str(m) for m in household.get("members") or [uid]]
+    member_oids = []
+    for mid in member_ids:
+        try:
+            member_oids.append(oid(mid))
+        except HTTPException:
+            continue
+    members = await db.users.find({"_id": {"$in": member_oids}}).to_list(20)
+    names = {str(m["_id"]): m.get("name", str(m["_id"])) for m in members}
+    pantry = await db.pantry_items.find({"user_id": {"$in": member_ids}}).to_list(500)
+    cart_doc = await db.group_carts.find_one({"space_id": body.space_id}) or {
+        "space_id": body.space_id, "household_id": str(household["_id"]),
+        "items": [], "skipped": []}
+    ctx = CartContext(products=products, pantry=pantry,
+                      cart={"items": list(cart_doc.get("items") or []),
+                            "skipped": list(cart_doc.get("skipped") or [])},
+                      user_id=uid, user_name=user.get("name", "Roommate"), names=names)
+    result = await handle_agent(body.text or "", ctx)
+    if not result.get("ignored"):
+        now = datetime.now(timezone.utc)
+        await db.group_carts.update_one(
+            {"space_id": body.space_id},
+            {"$set": {"space_id": body.space_id, "household_id": str(household["_id"]),
+                      "items": ctx.cart.get("items") or [], "skipped": ctx.cart.get("skipped") or [],
+                      "updated_at": now}},
+            upsert=True)
+    return clean(result | {"logged": not result.get("ignored"), "space_id": body.space_id,
+                           "user_id": uid, "household_id": str(household["_id"])})
+
+
+@app.post("/agent/personal")
+async def agent_personal(body: AgentMessageIn):
+    db = get_db()
+    user = await _user_by_phone(db, body.sender)
+    if not user:
+        return {
+            "reply": "I don't recognize this number yet — ask your household admin to link your phone in Cartwise.",
+            "list": {"items": [], "skipped": [], "total": 0, "count": 0},
+            "source": "engine",
+            "ignored": False,
+            "logged": False,
+            "space_id": body.space_id,
+            "user_id": None,
+        }
+    uid = str(user["_id"])
+    pantry = await _user_pantry(db, uid)
+    week_spent = await _week_spent(db, uid)
+    products = await db.products.find({}).to_list(500)
+    list_doc = await db.personal_lists.find_one({"user_id": uid}) or {"user_id": uid, "items": [], "skipped": []}
+    personal_list = {"items": list(list_doc.get("items") or []), "skipped": list(list_doc.get("skipped") or [])}
+    receipt_out = await handle_receipt(
+        db,
+        user=user,
+        user_id=uid,
+        space_id=body.space_id,
+        text=body.text,
+        image_base64=body.image_base64,
+        image_mime_type=body.image_mime_type,
+        products=products,
+        pantry=pantry,
+        week_spent=week_spent,
+        personal_list=personal_list,
+    )
+    if receipt_out:
+        plist = receipt_out.pop("_personal_list", None)
+        if plist is not None:
+            now = datetime.now(timezone.utc)
+            await db.personal_lists.update_one(
+                {"user_id": uid},
+                {"$set": {"user_id": uid, "items": plist.get("items") or [],
+                          "skipped": plist.get("skipped") or [], "updated_at": now}},
+                upsert=True,
+            )
+        return clean(receipt_out | {"logged": True, "space_id": body.space_id, "user_id": uid})
+
+    if not (body.text or "").strip() and not body.image_base64:
+        return clean({
+            "reply": None,
+            "list": cart_summary(personal_list),
+            "source": "engine",
+            "ignored": True,
+            "logged": False,
+            "space_id": body.space_id,
+            "user_id": uid,
+        })
+
+    ctx = PersonalContext(
+        products=products,
+        pantry=pantry,
+        personal_list=personal_list,
+        user=user,
+        user_id=uid,
+        user_name=user.get("name", "Friend"),
+        week_spent=week_spent,
+    )
+    result = await handle_personal(body.text or "", ctx)
+    if not result.get("ignored"):
+        now = datetime.now(timezone.utc)
+        await db.personal_lists.update_one(
+            {"user_id": uid},
+            {"$set": {"user_id": uid,
+                      "items": ctx.list.get("items") or [],
+                      "skipped": ctx.list.get("skipped") or [],
+                      "updated_at": now}},
+            upsert=True)
+    return clean(result | {"logged": not result.get("ignored"), "space_id": body.space_id, "user_id": uid})
+
+
+@app.get("/users/{user_id}/list")
+async def get_personal_list(user_id: str):
+    db = get_db()
+    if not await db.users.find_one({"_id": oid(user_id)}):
+        raise HTTPException(404, "User not found")
+    doc = await db.personal_lists.find_one({"user_id": user_id})
+    if not doc:
+        return {"user_id": user_id, "items": [], "skipped": [], "total": 0, "count": 0}
+    return clean(cart_summary(doc) | {"user_id": user_id})
+
+
+@app.get("/households/{household_id}/cart")
+async def get_household_cart(household_id: str):
+    db = get_db()
+    household = await db.households.find_one({"_id": oid(household_id)})
+    if not household:
+        raise HTTPException(404, "Household not found")
+    hid = str(household["_id"])
+    cart = await db.group_carts.find_one({"household_id": hid})
+    if not cart and household.get("space_id"):
+        cart = await db.group_carts.find_one({"space_id": household["space_id"]})
+    if not cart:
+        return {"household_id": hid, "space_id": household.get("space_id"),
+                "items": [], "skipped": [], "total": 0, "count": 0}
+    return clean(cart_summary(cart) | {"household_id": hid, "space_id": cart.get("space_id")})

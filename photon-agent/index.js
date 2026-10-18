@@ -172,6 +172,27 @@ if (projectId && projectSecret && webhookSecret) {
 }
 
 server.use(express.json());
+
+// Outbound send (used by backend for login codes). Protected by INTERNAL_SECRET.
+server.post("/send", async (req, res) => {
+  const secret = process.env.INTERNAL_SECRET;
+  if (!secret || req.get("x-internal-secret") !== secret) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const { to, text } = req.body || {};
+  if (!to || !text) return res.status(400).json({ error: "to and text required" });
+  if (!spectrumApp) return res.status(503).json({ error: "Photon is not configured" });
+  try {
+    const im = imessageProvider(spectrumApp);
+    const space = await im.space.create(to);
+    await space.send(text);
+    res.json({ sent: true });
+  } catch (err) {
+    console.error("Send error:", err);
+    res.status(500).json({ error: String(err?.message || err) });
+  }
+});
+
 server.get("/health", (_req, res) => {
   res.json({
     status: "ok",

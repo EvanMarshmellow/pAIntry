@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import kroger
+from app.auth import router as auth_router
 from app.agent import CartContext, handle as handle_agent
 from app.db import close, connect, get_db
 from app.engine import analyze, cart_summary
@@ -27,6 +28,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Grocery Assistant API", lifespan=lifespan)
+app.include_router(auth_router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -128,7 +130,6 @@ async def _week_spent(db, user_id: str) -> float:
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     carts = await db.carts.find({"user_id": user_id, "created_at": {"$gte": week_ago}}).to_list(200)
     return sum(c.get("total", 0) for c in carts)
-
 
 class ConvinceIn(BaseModel):
     user_id: str
@@ -260,8 +261,6 @@ async def _household_for(db, uid: str, space_id: str):
         await db.households.update_one({"_id": household["_id"]}, {"$set": {"space_id": space_id}})
         household["space_id"] = space_id
     return household
-
-
 @app.post("/agent/message")
 async def agent_message(body: AgentMessageIn):
     db = get_db()

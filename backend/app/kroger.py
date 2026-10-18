@@ -1,4 +1,4 @@
-"""Live grocery prices from the Kroger API (QFC stores near UW). Returns None on any problem."""
+"""Live grocery prices from the Kroger API, at the stores nearest the user's ZIP. Returns None on any problem."""
 import base64
 import os
 import time
@@ -6,9 +6,8 @@ import time
 import httpx
 
 API = "https://api.kroger.com/v1"
-STORES = {"Store A": "70500807",  # QFC University Village
-          "Store B": "70500869",  # QFC Wallingford
-          "Store C": "70500887"}  # QFC Broadway Market
+DEFAULT_ZIP = os.getenv("DEFAULT_ZIP", "98105")  # used when a user has no zip
+_stores_cache = {}  # zip -> {store name: locationId}
 _token = {"value": None, "exp": 0}
 
 
@@ -67,15 +66,44 @@ def to_engine(p):
                 "nutrition_per_serving": {"protein_g": p["protein_g_per_package"] or 0}}
 
 
-async def search(term: str, limit: int = 5):
-    """Search all 3 QFC stores; return products with per-store prices, or None if Kroger is unavailable."""
+async def _nearby(http, token, zip_code, count=3):
+    """Nearest Kroger-family stores to a ZIP, as {"QFC University Village (2746 NE 45th St)": locationId}."""
+    if zip_code in _stores_cache:
+        return _stores_cache[zip_code]
+    r = await http.get(f"{API}/locations", headers={"Authorization": f"Bearer {token}"},
+                       params={"filter.zipCode.near": zip_code, "filter.limit": count})
+    r.raise_for_status()
+    stores = {}
+    for loc in r.json().get("data", []):
+        name = loc.get("name") or loc.get("chain") or "Store"
+        street = (loc.get("address") or {}).get("addressLine1")
+        stores[f"{name} ({street})" if street else name] = loc["locationId"]
+    _stores_cache[zip_code] = stores
+    return stores
+
+
+async def nearby_stores(zip_code: str | None = None, count: int = 3):
+    """Public helper: nearest stores for a ZIP, or None if Kroger is unavailable."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            token = await _get_token(http)
+            return await _nearby(http, token, zip_code or DEFAULT_ZIP, count) if token else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def search(term: str, limit: int = 5, zip_code: str | None = None):
+    """Search the 3 stores nearest zip_code; return products with per-store prices, or None if Kroger is unavailable."""
     try:
         async with httpx.AsyncClient(timeout=10) as http:
             token = await _get_token(http)
             if not token:
                 return None
+            stores = await _nearby(http, token, zip_code or DEFAULT_ZIP)
+            if not stores:
+                return None
             products = {}
-            for store, loc in STORES.items():
+            for store, loc in stores.items():
                 r = await http.get(f"{API}/products", headers={"Authorization": f"Bearer {token}"},
                                    params={"filter.term": term, "filter.locationId": loc, "filter.limit": limit})
                 r.raise_for_status()

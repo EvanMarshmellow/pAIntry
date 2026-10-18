@@ -67,12 +67,21 @@ async def list_products(category: str | None = None):
 
 
 @app.get("/live-prices")
-async def live_prices(q: str, limit: int = 5):
-    """Real prices from 3 QFC stores (Kroger API). 503 if Kroger is unavailable."""
-    results = await kroger.search(q, limit)
+async def live_prices(q: str, limit: int = 5, zip: str | None = None):
+    """Real prices from the 3 stores nearest `zip` (Kroger API). 503 if Kroger is unavailable."""
+    results = await kroger.search(q, limit, zip)
     if results is None:
         raise HTTPException(503, "Kroger unavailable, using sample data")
     return results
+
+
+@app.get("/stores")
+async def stores(zip: str | None = None):
+    """Nearest Kroger-family stores (QFC, Fred Meyer, ...) to a ZIP."""
+    result = await kroger.nearby_stores(zip)
+    if result is None:
+        raise HTTPException(503, "Kroger unavailable")
+    return [{"name": n, "location_id": i} for n, i in result.items()]
 
 
 @app.get("/users/{user_id}")
@@ -141,11 +150,11 @@ async def convince_me(body: ConvinceIn, log: bool | None = None):
 
     product, alternatives, live = None, None, False
     if body.query and body.live:
-        results = await kroger.search(body.query, 10)
+        results = await kroger.search(body.query, 10, user.get("zip"))
         if results:
             items = [kroger.to_engine(r) for r in results]
             generic = body.query.split()[-1]  # e.g. "greek gods yogurt" -> "yogurt"
-            more = await kroger.search(generic, 20) if generic.lower() != body.query.lower() else None
+            more = await kroger.search(generic, 20, user.get("zip")) if generic.lower() != body.query.lower() else None
             seen = {i["_id"] for i in items}
             items += [kroger.to_engine(r) for r in (more or []) if r["upc"] not in seen]
             items = [i | {"category": generic.lower()} for i in items]

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.agent import CartContext, handle as handle_agent
 from app.db import close, connect, get_db
 from app.engine import analyze, cart_summary
-from app.grok import explain
+from app.convince import explain
 from app.personal_agent import PersonalContext, handle as handle_personal
 
 MAYA_ID = ObjectId("665f00000000000000000001")

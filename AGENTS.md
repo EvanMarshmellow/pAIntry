@@ -10,7 +10,7 @@ Work in [`backend/`](backend/) and [`photon-agent/`](photon-agent/). Run Python 
 
 [`backend/backend/`](backend/backend/) is a duplicate of the same app. Do not edit it. If the two trees disagree, `backend/` wins.
 
-Not implemented: Expo `app/`, Perceptron scan, Grok Voice, Grok Imagine, nutrition-gap list, cost split, mock Visa checkout.
+Not implemented: Expo `app/`, Perceptron scan, voice session, nutrition-gap list, cost split, mock Visa checkout.
 
 ## Layout
 
@@ -18,7 +18,7 @@ Not implemented: Expo `app/`, Perceptron scan, Grok Voice, Grok Imagine, nutriti
 |---|---|
 | [backend/app/main.py](backend/app/main.py) | FastAPI routes. Loads user, product, pantry, week spend, household cart; calls the engine, Gemini, and the chat agent. |
 | [backend/app/engine.py](backend/app/engine.py) | All math. No HTTP, no model imports. Convince Me plus group-cart and personal-list helpers. |
-| [backend/app/grok.py](backend/app/grok.py) | Explains Convince Me engine facts (via Gemini). `postprocess` overwrites the model's numbers. Missing key, timeout, or bad JSON falls back to the engine (`"source": "engine"`). |
+| [backend/app/convince.py](backend/app/convince.py) | Explains Convince Me engine facts (via Gemini). `postprocess` overwrites the model's numbers. Missing key, timeout, or bad JSON falls back to the engine (`"source": "engine"`). |
 | [backend/app/gemini.py](backend/app/gemini.py) | OpenAI-compatible Gemini chat client (`GEMINI_API_KEY`, `GEMINI_MODEL`). |
 | [backend/app/agent.py](backend/app/agent.py) | iMessage group-cart tool loop. Tools call the engine. Regex fallback if Gemini is down. |
 | [backend/app/personal_agent.py](backend/app/personal_agent.py) | 1:1 DM grocery planner. Personal list, budget, expiring, evaluate. Regex fallback if Gemini is down. |
@@ -177,7 +177,7 @@ Seed products live in the `P` list in [backend/seed.py](backend/seed.py), not in
 
 `protein_per_pkg` is `protein_g * servings`. Seed rows omit `servings`, so the multiplier is 1 and "per package" is the per-serving value.
 
-Gemini may suggest copy. [backend/app/grok.py](backend/app/grok.py) `postprocess` forces Skip on allergy conflicts, copies savings and the alternative from the engine, and replaces vague reasons with numeric engine reasons. Do not let a prompt or model response become the source of a price.
+Gemini may suggest copy. [backend/app/convince.py](backend/app/convince.py) `postprocess` forces Skip on allergy conflicts, copies savings and the alternative from the engine, and replaces vague reasons with numeric engine reasons. Do not let a prompt or model response become the source of a price.
 
 ## Group cart rules
 
@@ -208,6 +208,6 @@ Alex has an empty pantry. Household fridge for the group cart is the **union** (
 
 ## Not built
 
-Do not add these unless asked: Expo app, Perceptron scan, Grok Voice, Grok Imagine, nutrition-gap shopping list, group-cart cost split, mock Visa checkout, weekly recap, Gemini.
+Do not add these unless asked: Expo app, Perceptron scan, voice session, nutrition-gap shopping list, group-cart cost split, mock Visa checkout, weekly recap.
 
 Planned routes in the root README (`/convince`, `/pantry/scan`, `/list`, `/voice/session`, `/ledger`) are not the live API. The live convince route is `POST /convince-me`. Group chat is `POST /agent/message`; 1:1 DM is `POST /agent/personal`. Personal list read is `GET /users/{id}/list`. Savings: `GET /users/{id}/savings`.

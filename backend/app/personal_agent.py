@@ -9,7 +9,7 @@ import httpx
 from app import gemini
 from app.engine import (add_to_personal_list, analyze, cart_summary, cheapest,
                         empty_personal_list, remove_from_personal_list, resolve_product)
-from app.grok import engine_headline, engine_reasons
+from app.convince import engine_headline, engine_reasons
 
 log = logging.getLogger("uvicorn.error")
 SYSTEM = """You are Cartwise in a private iMessage helping one person plan groceries.

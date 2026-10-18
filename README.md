@@ -42,11 +42,12 @@
                           ├──► FastAPI backend ──► MongoDB Atlas
  iMessage / SMS ─► Photon │        │
      Node sidecar ────────┘        ├─ deterministic engine (scores, prices, savings, splits)
-                                   └─ ai/
-                                       ├─ grok.py     Grok: structured cards + agent tool loop
-                                       ├─ vision.py   Perceptron: receipt OCR, fridge detection
-                                       ├─ voice.py    Grok Voice realtime session + tools
-                                       ├─ imagine.py  Grok Imagine (pre-generated assets)
+                                   └─ app/
+                                       ├─ engine.py      deterministic Buy/Skip/Swap + cart math
+                                       ├─ convince.py    Convince Me card copy (Gemini + postprocess)
+                                       ├─ gemini.py      Gemini chat client
+                                       ├─ agent.py       group-cart tool loop
+                                       └─ personal_agent.py  1:1 DM planner
 ```
 
 All model calls go through the backend, so API keys never reach the client.
@@ -58,9 +59,7 @@ All model calls go through the backend, so API keys never reach the client.
 | App | React Native (Expo) |
 | Backend | FastAPI (Python) |
 | Database | MongoDB Atlas |
-| LLM | Grok (tool calling + JSON schema outputs) |
-| Voice | Grok Voice (realtime WebSocket) |
-| Images | Grok Imagine |
+| LLM | Gemini (tool calling + structured Convince Me cards) |
 | Vision / OCR | Perceptron |
 | Messaging | Photon 2.0 (iMessage, SMS fallback) via a Node sidecar |
 | Data | Open Food Facts + USDA FoodData Central; seeded prices (40–60 items × 3 stores) |
@@ -141,7 +140,7 @@ npm install && npx expo start
 | `POST` | `/pantry/confirm` | Save the confirmed items |
 | `GET` | `/list` | Budget-aware shopping list with the cheapest store per item |
 | `POST` | `/agent/message` | Inbound chat message from the Photon sidecar, reply out |
-| `POST` | `/voice/session` | Mint a short-lived token for Grok Voice |
+| `POST` | `/voice/session` | *(planned)* Realtime voice session |
 | `GET` | `/ledger` | Savings ledger and weekly totals |
 
 ---
@@ -152,6 +151,6 @@ npm install && npx expo start
 |---|---|
 | Frontend | Expo screens, Convince Me card, cart, checkout |
 | Backend / Data | Atlas schema, seed data, deterministic engine, savings ledger |
-| AI | Grok prompts and tools, Voice, Imagine, Perceptron |
+| AI | Gemini prompts and tools, Perceptron (planned) |
 | Agent + Story | Photon agent, group cart, recap, Devpost, video, pitch |
 

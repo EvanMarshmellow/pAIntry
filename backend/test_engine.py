@@ -7,7 +7,7 @@ from app.personal_agent import PersonalContext, handle as handle_personal, is_pe
 from app.engine import (add_to_group_cart, add_to_personal_list, analyze, cart_summary,
                         empty_group_cart, empty_personal_list, pantry_name_match,
                         remove_from_personal_list, resolve_product)
-from app.grok import DATA_SOURCES, Verdict, explain, postprocess
+from app.convince import DATA_SOURCES, Verdict, explain, postprocess
 
 
 def prod(name, cat, protein, prices, **kw):

@@ -4,13 +4,15 @@ import os
 
 from app.agent import CartContext, fallback
 from app.engine import (
-    add_group_pantry_item, add_to_group_cart, analyze, analyze_pantry_food_groups,
-    bump_repeat_line, clear_personal_list, empty_group_cart, live_search_terms,
-    merge_personal_lists, move_cart_line_to_group_pantry, pantry_edible_grams,
-    pantry_food_group, pick_live_product, remove_group_pantry_item, resolve_product,
-    set_group_pantry_quantity, set_personal_list_quantity, split_grocery_phrases,
+    add_group_pantry_item, add_spoken_personal_pantry_item, add_to_group_cart, analyze,
+    analyze_pantry_food_groups, bump_repeat_line, clear_personal_list, empty_group_cart,
+    live_search_terms, merge_personal_lists, move_cart_line_to_group_pantry,
+    move_personal_list_to_pantry, pantry_edible_grams, pantry_food_group, pick_live_product,
+    remove_group_pantry_item, resolve_product, set_group_pantry_quantity,
+    set_personal_list_quantity, split_grocery_phrases,
 )
-from app.personal_agent import PersonalContext, fallback as personal_fallback, parse_add_queries
+from app.personal_agent import (PersonalContext, fallback as personal_fallback, parse_add_queries,
+                                parse_pantry_move)
 from app.grok import DATA_SOURCES, Verdict, explain, postprocess
 
 
@@ -485,6 +487,107 @@ def test_personal_clear_phrases():
     ctx.results = []
     removed = asyncio.run(personal_fallback("remove milk", ctx))
     assert [line["name"] for line in removed["list"]["items"]] == ["Large Brown Eggs"]
+
+
+def test_personal_pantry_from_imessage():
+    milk = {"product_id": "milk", "name": "Kroger Vitamin D Whole Milk", "quantity": 1, "store": "QFC", "price": 3.49}
+    eggs = {"product_id": "eggs", "name": "Large Brown Eggs", "quantity": 2, "store": "QFC", "price": 2.99}
+    skipped = [{"name": "Bread", "pantry_name": "Bread"}]
+    listed = {"items": [dict(milk), dict(eggs)], "skipped": [dict(skipped[0])]}
+
+    assert parse_pantry_move("I want to add everything from my list to my pantry") == ("all", None)
+    assert parse_pantry_move("add all of my list to my pantry") == ("all", None)
+    assert parse_pantry_move("add my whole list to my pantry") == ("all", None)
+    assert parse_pantry_move("I want to add something to my pantry") == ("ask", None)
+    assert parse_pantry_move("add oat milk to my pantry") == ("one", "oat milk")
+    assert parse_add_queries("add oat milk to my pantry") == []
+    assert parse_add_queries("I want to add everything from my list to my pantry") == []
+    assert parse_add_queries("add milk to my list") == ["milk"]
+
+    async def boom(query, pantry=None):
+        raise AssertionError(query)
+
+    ctx = PersonalContext(
+        [], [], listed, {"weekly_budget": 60}, "u", "Maya", finder=boom)
+    for phrase in (
+        "I want to add everything from my list to my pantry",
+        "add all of my list to my pantry",
+        "add my whole list to my pantry",
+    ):
+        ctx.list = {"items": [dict(milk), dict(eggs)], "skipped": [dict(skipped[0])]}
+        ctx.pantry = []
+        ctx.results = []
+        out = asyncio.run(personal_fallback(phrase, ctx))
+        assert [line["name"] for line in ctx.pantry] == [
+            "Kroger Vitamin D Whole Milk", "Large Brown Eggs"], phrase
+        assert ctx.pantry[1]["quantity"] == 2 and ctx.pantry[0]["product_id"] == "milk"
+        assert ctx.list["items"] == [] and ctx.list["skipped"] == skipped
+        assert "Added 2 items from your list to your pantry" in out["reply"]
+        assert out["list"]["items"] == []
+
+    ctx.list = {"items": [], "skipped": [dict(skipped[0])]}
+    ctx.pantry = []
+    ctx.results = []
+    empty = asyncio.run(personal_fallback("I want to add everything from my list to my pantry", ctx))
+    assert empty["reply"] == "Your list is already empty."
+    assert ctx.pantry == [] and ctx.list["skipped"] == skipped
+
+    ctx.list = {"items": [dict(milk), dict(eggs)], "skipped": []}
+    ctx.pantry = []
+    ctx.results = []
+    one = asyncio.run(personal_fallback("I want to add eggs to my pantry", ctx))
+    assert [line["name"] for line in ctx.list["items"]] == ["Kroger Vitamin D Whole Milk"]
+    assert ctx.pantry[0]["name"] == "Large Brown Eggs" and ctx.pantry[0]["quantity"] == 2
+    assert "Moved 2 Large Brown Eggs from your list to your pantry." in one["reply"]
+
+    held = [{"_id": "p1", "name": "Whole Milk", "quantity": 1, "unit": "jug", "expires_at": "soon"}]
+    ctx.list = {"items": [], "skipped": []}
+    ctx.pantry = [dict(held[0])]
+    ctx.results = []
+    again = asyncio.run(personal_fallback("add milk to my pantry", ctx))
+    assert len(ctx.pantry) == 1
+    assert ctx.pantry[0]["_id"] == "p1" and ctx.pantry[0]["expires_at"] == "soon"
+    assert ctx.pantry[0]["quantity"] == 2 and ctx.pantry[0]["unit"] == "jug"
+    assert "Updated Whole Milk" in again["reply"]
+    assert ctx.list["items"] == []
+
+    catalog = [prod("Oat Milk", "dairy_eggs", 3, {"Store A": 4.29})]
+    ctx = PersonalContext(
+        catalog, [], {"items": [], "skipped": []}, {"weekly_budget": 60}, "u", "Maya", finder=boom)
+    added = asyncio.run(personal_fallback("add oat milk to my pantry", ctx))
+    assert ctx.pantry[0]["name"] == "Oat Milk" and ctx.pantry[0]["product_id"] == "Oat Milk"
+    assert ctx.pantry[0]["quantity"] == 1 and ctx.list["items"] == []
+    assert added["reply"] == "Added Oat Milk to your pantry."
+
+    ctx.results = []
+    bumped = asyncio.run(personal_fallback("add oat milk to my pantry", ctx))
+    assert len(ctx.pantry) == 1 and ctx.pantry[0]["quantity"] == 2
+    assert "Updated Oat Milk" in bumped["reply"]
+
+    ctx.list = {"items": [dict(milk)], "skipped": []}
+    before = [dict(line) for line in ctx.pantry]
+    ctx.results = []
+    asked = asyncio.run(personal_fallback("I want to add something to my pantry", ctx))
+    assert asked["reply"] == "Which item should I add to your pantry?"
+    assert ctx.list["items"][0]["name"] == milk["name"]
+    assert ctx.pantry == before
+
+    async def finder(query, pantry=None):
+        return {"status": "found", "product": {
+            "_id": "milk-upc", "name": "Whole Milk", "prices": {"Store A": 3.49}}}
+
+    shopping = PersonalContext(
+        [], [], {"items": [], "skipped": []}, {"weekly_budget": 60}, "u", "Maya", finder=finder)
+    listed_out = asyncio.run(personal_fallback("add milk", shopping))
+    assert [line["name"] for line in listed_out["list"]["items"]] == ["Whole Milk"]
+    assert shopping.pantry == []
+
+    cart, pantry, result = move_personal_list_to_pantry(
+        {"items": [], "skipped": skipped}, held)
+    assert result["action"] == "empty" and pantry == held
+    cart, pantry, result = add_spoken_personal_pantry_item(
+        {"items": [dict(milk)], "skipped": []}, [], "milk", [])
+    assert cart["items"] == [] and pantry[0]["product_id"] == "milk"
 
 
 if __name__ == "__main__":

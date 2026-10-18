@@ -670,6 +670,53 @@ def clear_personal_list(cart):
     return empty_personal_list(), {"action": "cleared", "removed": removed}
 
 
+def add_personal_pantry_item(items, name, quantity=1, unit="item", product_id=None):
+    """Name overlap increments quantity. Otherwise append a personal pantry line."""
+    return add_group_pantry_item(
+        items, name, quantity=quantity, unit=unit, product_id=product_id, added_by=None)
+
+
+def move_personal_list_to_pantry(cart, pantry):
+    """Move every shopping-list line into the pantry. Pantry skips stay on the list."""
+    skipped = [dict(line) for line in (cart or {}).get("skipped") or []]
+    items = [dict(line) for line in (cart or {}).get("items") or []]
+    if not items:
+        return {"items": [], "skipped": skipped}, pantry, {"action": "empty"}
+    out_pantry = pantry
+    moved = []
+    for line in items:
+        out_pantry, result = add_personal_pantry_item(
+            out_pantry,
+            line.get("name") or "",
+            quantity=float(line.get("quantity") or 1),
+            product_id=line.get("product_id"),
+        )
+        moved.append(result)
+    return {"items": [], "skipped": skipped}, out_pantry, {
+        "action": "moved_all", "count": len(moved), "items": moved,
+    }
+
+
+def add_spoken_personal_pantry_item(cart, pantry, query, products=None):
+    """Move a matching list line, or add the spoken name at quantity 1."""
+    line = list_line_for_query(cart, query)
+    if line:
+        qty = float(line.get("quantity") or 1)
+        pantry, result = add_personal_pantry_item(
+            pantry, line.get("name") or query, quantity=qty, product_id=line.get("product_id"))
+        cart, _removed = remove_from_personal_list(cart, line.get("product_id"))
+        return cart, pantry, {**result, "from_list": True, "list_quantity": qty}
+    product = resolve_product(query, products or [], pantry=None)
+    if product:
+        name = product.get("name") or (query or "").strip()
+        product_id = str(product.get("_id", name))
+    else:
+        name = (query or "").strip()
+        product_id = None
+    pantry, result = add_personal_pantry_item(pantry, name, quantity=1, product_id=product_id)
+    return cart, pantry, {**result, "from_list": False}
+
+
 def merge_personal_lists(primary, other):
     """Copy `other` onto `primary`. The same product_id sums quantity."""
     out = {

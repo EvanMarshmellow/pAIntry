@@ -169,6 +169,43 @@ def _revision_query(user_id: str, revision: int):
     return {"user_id": user_id, "revision": revision}
 
 
+def _same_qty(left, right):
+    try:
+        return float(left or 0) == float(right or 0)
+    except (TypeError, ValueError):
+        return left == right
+
+
+async def save_personal_pantry(db, user_id: str, before: list, after: list):
+    """Update a changed quantity, or insert a new line. Other pantry docs stay put."""
+    before_ids = {item.get("_id"): item for item in before or [] if item.get("_id") is not None}
+    now = datetime.now(timezone.utc)
+    for item in after or []:
+        item_id = item.get("_id")
+        if item_id is not None:
+            old = before_ids.get(item_id)
+            if not old or _same_qty(old.get("quantity"), item.get("quantity")):
+                continue
+            await db.pantry_items.update_one(
+                {"_id": item_id, "user_id": user_id},
+                {"$set": {"quantity": item.get("quantity")}},
+            )
+            continue
+        name = (item.get("name") or "").strip()
+        if not name:
+            continue
+        doc = {
+            "user_id": user_id,
+            "name": name,
+            "quantity": item.get("quantity", 1),
+            "unit": item.get("unit") or "item",
+            "added_at": now,
+        }
+        if item.get("product_id"):
+            doc["product_id"] = str(item["product_id"])
+        await db.pantry_items.insert_one(doc)
+
+
 async def save_personal_list(db, user_id: str, cart, revision: int) -> bool:
     """Write the list only when `revision` is still current. Returns False on a race."""
     now = datetime.now(timezone.utc)
@@ -559,6 +596,9 @@ async def agent_personal(body: AgentMessageIn):
             result = await handle_personal(body.text or "", ctx)
             if not result.get("ignored"):
                 await save_personal_list(db, uid, ctx.list, fresh["revision"])
+                await save_personal_pantry(db, uid, pantry, ctx.pantry)
+        else:
+            await save_personal_pantry(db, uid, pantry, ctx.pantry)
     return clean(result | {"logged": not result.get("ignored"), "space_id": body.space_id, "user_id": uid})
 
 

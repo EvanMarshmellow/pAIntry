@@ -2,3 +2,6 @@
 __pycache__/
 venv/
 *.pyc
+
+# Local API PDF generator (keep out of GitHub)
+scripts/

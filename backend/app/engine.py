@@ -183,6 +183,102 @@ def cart_summary(cart):
             "total": total, "count": len(items)}
 
 
+# --- Group pantry (one list per iMessage group; never a user's pantry_items) ---
+
+
+def _copy_pantry(items):
+    return [dict(item) for item in items or []]
+
+
+def _names_overlap(a, b):
+    left = (a or "").strip().lower()
+    right = (b or "").strip().lower()
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
+
+
+def _find_pantry_index(items, query):
+    for i, item in enumerate(items or []):
+        if _names_overlap(query, item.get("name")):
+            return i
+    return None
+
+
+def add_group_pantry_item(items, name, quantity=1, unit="item", product_id=None, added_by=None):
+    """Name overlap increments quantity. Otherwise append a new line."""
+    out = _copy_pantry(items)
+    idx = _find_pantry_index(out, name)
+    if idx is not None:
+        line = out[idx]
+        line["quantity"] = float(line.get("quantity") or 0) + float(quantity)
+        return out, {"action": "quantity", "name": line.get("name"), "quantity": line["quantity"],
+                     "unit": line.get("unit") or unit or "item", "product_id": line.get("product_id"),
+                     "added_by": line.get("added_by")}
+    line = {"name": name, "quantity": float(quantity), "unit": unit or "item"}
+    if product_id:
+        line["product_id"] = str(product_id)
+    if added_by:
+        line["added_by"] = added_by
+    out.append(line)
+    return out, {"action": "added", **line}
+
+
+def remove_group_pantry_item(items, query):
+    out = _copy_pantry(items)
+    idx = _find_pantry_index(out, query)
+    if idx is None:
+        return out, {"action": "not_found", "query": query}
+    removed = out.pop(idx)
+    return out, {"action": "removed", "name": removed.get("name"), "query": query}
+
+
+def set_group_pantry_quantity(items, query, quantity):
+    """Set quantity. Quantity <= 0 deletes the line."""
+    out = _copy_pantry(items)
+    idx = _find_pantry_index(out, query)
+    if idx is None:
+        return out, {"action": "not_found", "query": query}
+    if float(quantity) <= 0:
+        removed = out.pop(idx)
+        return out, {"action": "removed", "name": removed.get("name"), "quantity": 0, "query": query}
+    out[idx]["quantity"] = float(quantity)
+    return out, {"action": "updated", "name": out[idx].get("name"), "quantity": out[idx]["quantity"],
+                 "query": query}
+
+
+def move_cart_line_to_group_pantry(cart, items, query, added_by):
+    """Move a group-cart line into the group pantry. No cart match still adds the query."""
+    out_cart = {
+        "items": [dict(line) for line in (cart or {}).get("items") or []],
+        "skipped": list((cart or {}).get("skipped") or []),
+    }
+    for line in out_cart["items"]:
+        line["requesters"] = list(line.get("requesters") or [])
+    matched = None
+    kept = []
+    for line in out_cart["items"]:
+        if matched is None and _names_overlap(query, line.get("name")):
+            matched = line
+            qty = int(line.get("quantity") or 1)
+            if qty > 1:
+                line["quantity"] = qty - 1
+                kept.append(line)
+        else:
+            kept.append(line)
+    out_cart["items"] = kept
+    if matched:
+        pantry, result = add_group_pantry_item(
+            items, matched.get("name") or query, quantity=1,
+            unit=matched.get("unit") or "item", product_id=matched.get("product_id"),
+            added_by=added_by)
+        result = {**result, "from_cart": True}
+    else:
+        pantry, result = add_group_pantry_item(items, (query or "").strip(), quantity=1, added_by=added_by)
+        result = {**result, "from_cart": False}
+    return out_cart, pantry, result
+
+
 # --- Personal list (solo DM; no requesters / household merge) ---
 
 
@@ -232,9 +328,28 @@ def remove_from_personal_list(cart, product_id):
     return out, {"action": "removed", "name": removed_name, "product_id": pid}
 
 
-# --- Pantry food-group mix (MyPlate-style, serving-based) ---
+# --- Pantry food-group mix (classic pyramid, calorie-based %) ---
 
-FOOD_GROUPS = ("vegetables", "fruits", "grains", "proteins_dairy", "sweets_fats")
+FOOD_GROUPS = ("grains", "vegetables", "fruits", "proteins_dairy", "sweets_fats")
+
+# Classic food pyramid targets (sum to 100%).
+PYRAMID_TARGET_PCT = {
+    "grains": 30,
+    "vegetables": 25,
+    "fruits": 20,
+    "proteins_dairy": 15,
+    "sweets_fats": 10,
+}
+
+PYRAMID_LABELS = {
+    "grains": "Grains",
+    "vegetables": "Vegetables",
+    "fruits": "Fruit",
+    "proteins_dairy": "Protein & Dairy",
+    "sweets_fats": "Fat & Sweet",
+}
+
+PYRAMID_STATUS_BAND = 5  # percentage points above/below target → high/low
 
 SERVING_G = {
     "vegetables": 85,
@@ -422,30 +537,27 @@ def _pct(part, whole):
     return round(part / whole * 100, 1) if whole else 0.0
 
 
-def _group_status(group, pct_servings, produce_combined_pct):
-    if group in ("vegetables", "fruits"):
-        if produce_combined_pct < 25:
-            return "low"
-        if produce_combined_pct > 45:
-            return "high"
-        return "ok"
-    if group == "grains":
-        if pct_servings < 15:
-            return "low"
-        if pct_servings > 30:
-            return "high"
-        return "ok"
-    if group == "proteins_dairy":
-        if pct_servings < 20:
-            return "low"
-        if pct_servings > 35:
-            return "high"
-        return "ok"
-    if group == "sweets_fats":
-        if pct_servings > 15:
-            return "high"
-        return "ok"
+def _group_status_pyramid(group, pct_calories):
+    target = PYRAMID_TARGET_PCT.get(group, 0)
+    band = PYRAMID_STATUS_BAND
+    if pct_calories < target - band:
+        return "low"
+    if pct_calories > target + band:
+        return "high"
     return "ok"
+
+
+def _pyramid_hints(groups_out):
+    hints = []
+    for g in FOOD_GROUPS:
+        row = groups_out[g]
+        delta = round(row["pct_calories"] - row["target_pct"], 1)
+        label = PYRAMID_LABELS[g]
+        if row["status"] == "low":
+            hints.append(f"{label} is {abs(delta):.0f} pts below the {row['target_pct']}% pyramid target.")
+        elif row["status"] == "high":
+            hints.append(f"{label} is {delta:.0f} pts above the {row['target_pct']}% pyramid target.")
+    return hints[:4]
 
 
 def analyze_pantry_food_groups(pantry, products, user_id=None):
@@ -499,42 +611,44 @@ def analyze_pantry_food_groups(pantry, products, user_id=None):
     groups_out = {}
     for g in FOOD_GROUPS:
         pct_s = _pct(totals_serv[g], sum_serv)
+        pct_c = _pct(totals_cal[g], sum_cal)
+        target = PYRAMID_TARGET_PCT[g]
         groups_out[g] = {
+            "label": PYRAMID_LABELS[g],
+            "target_pct": target,
+            "pct": pct_c,
+            "pct_calories": pct_c,
             "pct_servings": pct_s,
             "pct_grams": _pct(totals_g[g], sum_g),
-            "pct_calories": _pct(totals_cal[g], sum_cal),
+            "delta_from_target": round(pct_c - target, 1),
+            "calories_on_hand": round(totals_cal[g], 0),
             "grams_on_hand": round(totals_g[g], 1),
             "serving_equiv": round(totals_serv[g], 2),
             "status": "ok",
         }
 
-    produce_combined = groups_out["vegetables"]["pct_servings"] + groups_out["fruits"]["pct_servings"]
     for g in FOOD_GROUPS:
-        groups_out[g]["status"] = _group_status(g, groups_out[g]["pct_servings"], produce_combined)
+        groups_out[g]["status"] = _group_status_pyramid(g, groups_out[g]["pct_calories"])
 
-    hints = []
-    if produce_combined < 25:
-        hints.append("Produce (vegetables + fruits) is below 25% of serving equivalents — stock more fresh items.")
-    elif produce_combined > 45:
-        hints.append("Produce is above 45% of serving equivalents — balance with grains and protein/dairy.")
-    if groups_out["sweets_fats"]["pct_servings"] > 15:
-        hints.append("Sweets/fats exceed 15% — consider shifting toward whole grains and lean protein.")
-    if groups_out["proteins_dairy"]["pct_servings"] < 20:
-        hints.append("Protein/dairy is under 20% — add beans, dairy, eggs, or lean meat.")
-    if groups_out["grains"]["pct_servings"] < 15:
-        hints.append("Grains are under 15% — rice, oats, or bread would round out the pantry.")
+    produce_target = PYRAMID_TARGET_PCT["vegetables"] + PYRAMID_TARGET_PCT["fruits"]
+    produce_actual = groups_out["vegetables"]["pct_calories"] + groups_out["fruits"]["pct_calories"]
 
     return {
         "user_id": user_id,
-        "primary_metric": "servings",
+        "primary_metric": "calories",
+        "pyramid_model": "classic",
+        "pyramid_targets": dict(PYRAMID_TARGET_PCT),
         "groups": groups_out,
-        "combined_produce_pct_servings": round(produce_combined, 1),
-        "pantry_balance_hint": hints,
+        "combined_produce_pct": round(produce_actual, 1),
+        "combined_produce_target_pct": produce_target,
+        "pantry_balance_hint": _pyramid_hints(groups_out),
         "lines": lines,
         "unclassified_grams": round(unclassified_grams, 1),
         "assumptions": [
-            "Percentages use USDA-style serving gram weights per group.",
-            "Pantry mass is estimated from catalog package size and pantry quantity/units.",
+            "Primary percentages are share of estimated pantry calories by food group.",
+            "Calories scale from catalog nutrition_per_serving and estimated amount on hand.",
+            "Targets follow the classic pyramid: grains 30%, vegetables 25%, fruit 20%, "
+            "protein & dairy 15%, fat & sweet 10%.",
             "Pantry mix reflects what you have on hand, not daily intake.",
         ],
     }

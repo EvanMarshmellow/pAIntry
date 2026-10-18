@@ -40,6 +40,35 @@ export type NewPantryItem = {
   expires_at?: string
 }
 
+export type PantryFoodGroupRow = {
+  label: string
+  target_pct: number
+  pct: number
+  pct_calories: number
+  pct_servings: number
+  pct_grams: number
+  delta_from_target: number
+  calories_on_hand: number
+  grams_on_hand: number
+  serving_equiv: number
+  status: 'low' | 'ok' | 'high'
+}
+
+export type PantryFoodGroups = {
+  user_id: string
+  primary_metric: 'calories'
+  pyramid_model: string
+  pyramid_targets: Record<string, number>
+  groups: Record<
+    'grains' | 'vegetables' | 'fruits' | 'proteins_dairy' | 'sweets_fats',
+    PantryFoodGroupRow
+  >
+  combined_produce_pct: number
+  combined_produce_target_pct: number
+  pantry_balance_hint: string[]
+  assumptions: string[]
+}
+
 export type Verdict = {
   verdict: 'Buy' | 'Skip' | 'Swap'
   headline: string

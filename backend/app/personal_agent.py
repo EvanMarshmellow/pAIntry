@@ -7,16 +7,20 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from app import gemini
-from app.engine import (add_to_personal_list, analyze, cart_summary, cheapest,
-                        empty_personal_list, remove_from_personal_list, resolve_product)
+from app.engine import (add_live_product, analyze, cart_summary, cheapest,
+                        empty_personal_list, list_line_for_query, remove_from_personal_list,
+                        resolve_product, split_grocery_phrases)
 from app.grok import engine_headline, engine_reasons
+from app.kroger import search_for_list
 
 log = logging.getLogger("uvicorn.error")
 SYSTEM = """You are Cartwise in a private iMessage helping one person plan groceries.
 Rules:
 - Call tools for pantry, budget, expiring items, list changes, and Buy/Skip/Swap checks. Never invent prices or product ids.
 - Personal list is separate from any roommate group cart.
-- If resolve_product found is false, say it is not in the catalog.
+- resolve_product searches nearby Kroger stores. product_id is the UPC. Do not invent one.
+- If resolve_product status is unavailable, say Kroger can't be reached and the item was not added.
+- If resolve_product found is false, say it wasn't found at nearby Kroger stores and do not add it.
 - If add_list_item action is skipped, say they already have that pantry item at home.
 - Short iMessage, under 5 sentences. No medical advice.
 Reply with ONLY JSON: {"reply":"your text"}"""
@@ -38,14 +42,14 @@ TOOLS = [
     }},
     {"type": "function", "function": {
         "name": "resolve_product",
-        "description": "Match a grocery phrase to one catalog product",
+        "description": "Search nearby Kroger stores for a grocery phrase. Returns found, status, product_id (UPC), name, store, price.",
         "parameters": {"type": "object",
                        "properties": {"query": {"type": "string"}},
                        "required": ["query"]},
     }},
     {"type": "function", "function": {
         "name": "add_list_item",
-        "description": "Add a catalog product to the personal list by product_id",
+        "description": "Add a product_id returned by resolve_product to the personal list",
         "parameters": {"type": "object",
                        "properties": {"product_id": {"type": "string"}},
                        "required": ["product_id"]},
@@ -91,7 +95,8 @@ def _aware(dt):
 
 
 class PersonalContext:
-    def __init__(self, products, pantry, personal_list, user, user_id, user_name, week_spent=0.0):
+    def __init__(self, products, pantry, personal_list, user, user_id, user_name, week_spent=0.0,
+                 zip_code=None, finder=None):
         self.products = products
         self.pantry = pantry
         self.list = personal_list
@@ -99,7 +104,25 @@ class PersonalContext:
         self.user_id = user_id
         self.user_name = user_name
         self.week_spent = week_spent
+        self.zip_code = zip_code
+        self._finder = finder
+        self.found = {}
         self.results = []
+
+    async def find_live(self, query):
+        if self._finder is not None:
+            return await self._finder(query, self.pantry)
+        return await search_for_list(query, self.zip_code, self.pantry)
+
+    def remember(self, product):
+        if product:
+            self.found[str(product.get("_id", product.get("name")))] = product
+
+    def product_by_id(self, pid):
+        pid = str(pid or "")
+        if pid in self.found:
+            return self.found[pid]
+        return next((x for x in self.products if str(x.get("_id", x.get("name"))) == pid), None)
 
     def expiring_soon(self):
         soon = datetime.now(timezone.utc) + timedelta(days=3)
@@ -128,7 +151,7 @@ class PersonalContext:
         cat = product.get("category")
         return [p for p in self.products if p.get("category") == cat]
 
-    def run_tool(self, name, args=None):
+    async def run_tool(self, name, args=None):
         args = args or {}
         if name == "get_pantry":
             return [{"name": i.get("name"), "quantity": i.get("quantity"), "unit": i.get("unit"),
@@ -138,23 +161,31 @@ class PersonalContext:
         if name == "get_expiring":
             return self.expiring_soon()
         if name == "resolve_product":
-            p = resolve_product(args.get("query", ""), self.products, self.pantry)
-            if not p:
-                return {"found": False, "query": args.get("query")}
+            query = args.get("query", "")
+            found = await self.find_live(query)
+            if found.get("status") != "found":
+                return {"found": False, "query": query, "status": found.get("status", "not_found")}
+            p = found["product"]
+            self.remember(p)
             store, price = cheapest(p)
-            return {"found": True, "product_id": str(p.get("_id", p.get("name"))),
+            return {"found": True, "status": "found", "product_id": str(p.get("_id", p.get("name"))),
                     "name": p["name"], "store": store, "price": price}
         if name == "add_list_item":
             pid = str(args.get("product_id", ""))
-            p = next((x for x in self.products if str(x.get("_id", x.get("name"))) == pid), None)
+            p = self.product_by_id(pid)
             if not p:
                 result = {"action": "unknown", "query": pid}
             else:
-                self.list, result = add_to_personal_list(self.list, p, self.pantry)
+                self.list, result = add_live_product(self.list, p, self.pantry, personal=True)
             self.results.append(result)
             return result
         if name == "remove_list_item":
             pid = str(args.get("product_id", ""))
+            line = next((x for x in self.list.get("items") or [] if str(x.get("product_id")) == pid), None)
+            if line is None:
+                line = list_line_for_query(self.list, pid)
+                if line:
+                    pid = line.get("product_id")
             self.list, result = remove_from_personal_list(self.list, pid)
             self.results.append(result)
             return result
@@ -201,7 +232,7 @@ def parse_add_queries(text):
     blob = re.sub(r"\s+to (?:my )?(?:the )?(?:list|cart)$", "", m.group(1), flags=re.I)
     blob = re.sub(r"\s+on (?:my )?(?:the )?(?:list|cart)$", "", blob, flags=re.I)
     blob = re.sub(r"[.!?]+$", "", blob).strip()
-    return [p.strip() for p in re.split(r"\s+and\s+|,\s*", blob) if p.strip()]
+    return split_grocery_phrases(blob)
 
 
 def parse_evaluate_query(text):
@@ -235,7 +266,9 @@ def format_list_reply(results, summary, extras=None):
         elif action == "not_found":
             lines.append("That item is not on your list.")
         elif action == "unknown":
-            lines.append(f"I don't have '{r.get('query')}' in the catalog.")
+            lines.append(f"I couldn't find '{r.get('query')}' at nearby Kroger stores.")
+        elif action == "unavailable":
+            lines.append(f"I can't reach Kroger right now, so I didn't add '{r.get('query')}'.")
     if summary and summary.get("items") and summary.get("_show_total"):
         bits = [f"{i['name']} ${i['price']:.2f} at {i['store']}" for i in summary["items"]]
         lines.append("Your list: " + "; ".join(bits) + f". Total ${summary['total']:.2f}.")
@@ -253,7 +286,7 @@ def format_list_reply(results, summary, extras=None):
     return " ".join(lines)
 
 
-def fallback(text, ctx: PersonalContext) -> dict:
+async def fallback(text, ctx: PersonalContext) -> dict:
     summary = cart_summary(ctx.list)
     extras = []
     if EXPIRE_RE.search(text or ""):
@@ -277,20 +310,26 @@ def fallback(text, ctx: PersonalContext) -> dict:
             extras.append(engine_headline(verdict, facts) + " " + " ".join(engine_reasons(verdict, facts)[:2]))
     remove_q = parse_remove_query(text)
     if remove_q:
-        p = resolve_product(remove_q, ctx.products, ctx.pantry)
-        if p:
-            ctx.list, result = remove_from_personal_list(ctx.list, str(p.get("_id", p.get("name"))))
+        line = list_line_for_query(ctx.list, remove_q)
+        if line:
+            ctx.list, result = remove_from_personal_list(ctx.list, line.get("product_id"))
             ctx.results.append(result)
     if is_list_intent(text) and not parse_add_queries(text) and not eval_q:
         summary["_show_total"] = True
         return {"reply": format_list_reply([], summary, extras),
                 "list": cart_summary(ctx.list), "source": "engine", "ignored": False}
     for q in parse_add_queries(text):
-        p = resolve_product(q, ctx.products, ctx.pantry)
-        if not p:
+        found = await ctx.find_live(q)
+        status = found.get("status")
+        if status == "unavailable":
+            ctx.results.append({"action": "unavailable", "query": q})
+            continue
+        if status != "found":
             ctx.results.append({"action": "unknown", "query": q})
             continue
-        ctx.list, result = add_to_personal_list(ctx.list, p, ctx.pantry)
+        product = found["product"]
+        ctx.remember(product)
+        ctx.list, result = add_live_product(ctx.list, product, ctx.pantry, personal=True)
         ctx.results.append(result)
     if ctx.results or extras:
         return {"reply": format_list_reply(ctx.results, cart_summary(ctx.list), extras),
@@ -318,7 +357,7 @@ async def handle(text, ctx: PersonalContext) -> dict:
     if not is_personal_intent(text):
         return {"reply": None, "list": cart_summary(ctx.list), "source": "engine", "ignored": True}
     if not gemini.api_key():
-        return fallback(text, ctx)
+        return await fallback(text, ctx)
     msgs = [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"{ctx.user_name} says: {text}"}]
     try:
@@ -330,7 +369,7 @@ async def handle(text, ctx: PersonalContext) -> dict:
                     reply = _parse_reply(msg.get("content") or "")
                     summary = cart_summary(ctx.list)
                     if not reply:
-                        return fallback(text, ctx)
+                        return await fallback(text, ctx)
                     return {"reply": reply, "list": summary, "source": "gemini", "ignored": False}
                 msgs.append({k: msg[k] for k in ("role", "content", "tool_calls") if k in msg})
                 for c in calls:
@@ -339,7 +378,7 @@ async def handle(text, ctx: PersonalContext) -> dict:
                         args = json.loads(fn.get("arguments") or "{}")
                     except json.JSONDecodeError:
                         args = {}
-                    result = ctx.run_tool(fn.get("name"), args)
+                    result = await ctx.run_tool(fn.get("name"), args)
                     msgs.append({"role": "tool", "tool_call_id": c["id"],
                                  "content": json.dumps(result, default=str)})
         log.warning("Personal agent fallback: no final answer after tool rounds")
@@ -351,4 +390,4 @@ async def handle(text, ctx: PersonalContext) -> dict:
         log.warning("Personal agent fallback: bad response (%s): %r", type(e).__name__, e)
     except Exception as e:  # noqa: BLE001
         log.warning("Personal agent fallback: %r", e)
-    return fallback(text, ctx)
+    return await fallback(text, ctx)

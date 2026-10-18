@@ -408,7 +408,8 @@ async def agent_message(body: AgentMessageIn):
                       "space_id": body.space_id, "user_id": uid, "household_id": hid})
 
     ctx = CartContext(products=products, pantry=pantry, cart=cart,
-                      user_id=actor, user_name=user_name, names=names)
+                      user_id=actor, user_name=user_name, names=names,
+                      zip_code=(user or {}).get("zip"))
     result = await handle_agent(body.text or "", ctx)
     if not result.get("ignored"):
         now = datetime.now(timezone.utc)
@@ -484,6 +485,7 @@ async def agent_personal(body: AgentMessageIn):
         user_id=uid,
         user_name=user.get("name", "Friend"),
         week_spent=week_spent,
+        zip_code=user.get("zip"),
     )
     result = await handle_personal(body.text or "", ctx)
     if not result.get("ignored"):

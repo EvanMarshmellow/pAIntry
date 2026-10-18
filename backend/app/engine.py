@@ -148,6 +148,313 @@ def pantry_name_match(product, pantry):
     return None
 
 
+# Spoken grocery wording that does not appear on the package.
+_SPOKEN = {
+    "coke": ("coca cola",),
+    "diet coke": ("diet coke",),
+    "oj": ("orange juice",),
+    "pb": ("peanut butter",),
+    "mayo": ("mayonnaise",),
+    "mac and cheese": ("macaroni and cheese",),
+    "mac n cheese": ("macaroni and cheese",),
+    "kraft dinner": ("macaroni and cheese",),
+    "bbq": ("barbecue",),
+    "bbq sauce": ("barbecue sauce",),
+    "catsup": ("ketchup",),
+    "mt dew": ("mountain dew",),
+    "tin foil": ("aluminum foil",),
+    "aluminium foil": ("aluminum foil",),
+    "saran wrap": ("plastic wrap",),
+    "kleenex": ("facial tissue",),
+    "q tips": ("cotton swabs",),
+    "qtips": ("cotton swabs",),
+    "band aids": ("adhesive bandages",),
+    "bandaids": ("adhesive bandages",),
+    "scallions": ("green onions",),
+    "scallion": ("green onion",),
+    "fries": ("french fries",),
+    "cool whip": ("whipped topping",),
+    "pop tarts": ("pop tarts",),
+    "poptarts": ("pop tarts",),
+    "cheez its": ("cheez it",),
+    "cheezit": ("cheez it",),
+    "toilet paper": ("bath tissue",),
+    "dish soap": ("dishwashing liquid",),
+    "trash bags": ("garbage bags",),
+    "burgers": ("hamburger",),
+    "burger": ("hamburger",),
+    "skim milk": ("fat free milk",),
+    "nonfat milk": ("fat free milk",),
+    "2 percent milk": ("2% milk", "reduced fat milk"),
+}
+
+# "and" phrases that are one product, so "mac and cheese and milk" stays two adds.
+_ONE_PRODUCT = (
+    "macaroni and cheese",
+    "mac and cheese",
+    "mac n cheese",
+    "peas and carrots",
+    "pork and beans",
+    "spaghetti and meatballs",
+    "fish and chips",
+    "bread and butter pickles",
+    "salt and vinegar chips",
+)
+
+_STOP = {"a", "an", "the", "and", "or", "of", "with", "for", "some", "to", "my", "please"}
+
+# Extra words that make a different food. Bare "milk" prefers whole milk over almond milk.
+_MODIFIERS = {
+    "almond", "oat", "oatmilk", "soy", "soymilk", "coconut", "cashew", "hemp",
+    "peanut", "chocolate", "strawberry", "vanilla", "blueberry", "raspberry",
+    "greek", "icelandic", "cheddar", "swiss", "mozzarella", "parmesan", "provolone", "american",
+    "cinnamon", "honey", "maple", "garlic", "ranch", "barbecue", "bbq", "spicy", "buffalo",
+    "wheat", "sourdough", "rye", "brown", "jasmine",
+    "thigh", "wing", "drumstick", "wings", "turkey", "salmon", "tuna", "shrimp",
+    "sour", "ice", "tortilla", "corn", "pita", "buns", "bun", "rolls", "roll",
+    "fat", "free", "skim", "nonfat", "reduced",
+    "pickle", "pickles", "butter", "cheese", "macaroni",
+    "flavored", "frosted", "glazed", "stuffed",
+}
+
+_RETAIL_NOISE = {
+    "family", "king", "snack", "single", "size", "sizes", "pack", "packs", "count", "ct", "pk",
+    "package", "oz", "ounce", "ounces", "lb", "lbs", "pound", "pounds", "gallon", "gal", "quart",
+    "qt", "liter", "ml", "fl", "bag", "box", "can", "cans", "jar", "bottle", "loaf", "bunch",
+    "dozen", "g", "kg", "mg",
+}
+
+
+def _norm(value):
+    text = (value or "").lower().replace("&", " and ")
+    text = re.sub(r"[^a-z0-9%]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _stems(word):
+    """Surface form plus a simple plural stem (oreos, tomatoes, berries, sandwiches)."""
+    forms = {word}
+    if len(word) <= 3:
+        return forms
+    if word.endswith("ies"):
+        forms.add(word[:-3] + "y")
+    elif word.endswith("oes"):
+        forms.add(word[:-2])
+    elif word.endswith(("ches", "shes", "sses", "xes", "zes")):
+        forms.add(word[:-2])
+    elif word.endswith("s") and not word.endswith("ss"):
+        forms.add(word[:-1])
+    return forms
+
+
+def _content_tokens(text):
+    return [word for word in _norm(text).split() if word not in _STOP and len(word) > 1]
+
+
+def _phrase_forms(query):
+    forms = []
+
+    def add(value):
+        value = _norm(value)
+        if value and value not in forms:
+            forms.append(value)
+
+    add(query)
+    words = _norm(query).split()
+    if words:
+        for stem in _stems(words[-1]):
+            add(" ".join(words[:-1] + [stem]))
+    for extra in _SPOKEN.get(_norm(query), ()):
+        add(extra)
+        extra_words = _norm(extra).split()
+        if extra_words:
+            for stem in _stems(extra_words[-1]):
+                add(" ".join(extra_words[:-1] + [stem]))
+    return forms
+
+
+def live_search_terms(query):
+    """User text first, then a couple of package-label phrases when the spoken name differs."""
+    spoken = (query or "").strip()
+    terms = []
+    if spoken:
+        terms.append(spoken)
+    for extra in _SPOKEN.get(_norm(spoken), ()):
+        if all(_norm(extra) != _norm(term) for term in terms):
+            terms.append(extra)
+    return terms[:3]
+
+
+def _token_in(token, words):
+    stems = _stems(token)
+    for word in words:
+        if stems & _stems(word):
+            return True
+        if len(token) >= 4 and (word.startswith(token) or (word.endswith(token) and len(word) > len(token))):
+            return True
+    return False
+
+
+def _rank_form(form, name, text, squeezed):
+    if not form:
+        return None
+    compact = form.replace(" ", "")
+    if form == name or form == text:
+        return 0
+    if _word_in(form, text) or _word_in(form, name):
+        return 1
+    if len(form) >= 4 and form in text:
+        return 2
+    if " " in form and len(compact) >= 4 and compact in squeezed:
+        return 2
+    tokens = _content_tokens(form)
+    words = text.split()
+    if tokens and all(_token_in(token, words) for token in tokens):
+        return 3
+    return None
+
+
+def _live_rank(query, product):
+    name = _norm(product.get("name"))
+    if not name:
+        return None
+    brand = _norm(product.get("brand"))
+    text = f"{brand} {name}".strip() if brand else name
+    squeezed = text.replace(" ", "")
+    best = None
+    for form in _phrase_forms(query):
+        rank = _rank_form(form, name, text, squeezed)
+        if rank is not None and (best is None or rank < best):
+            best = rank
+    return best
+
+
+def _modifier_penalty(query, name):
+    covered = set()
+    for token in _content_tokens(query):
+        covered |= _stems(token)
+    penalty = 0
+    for word in _norm(name).split():
+        if _stems(word) & covered:
+            continue
+        if _stems(word) & _MODIFIER_STEMS:
+            penalty += 1
+    return penalty
+
+
+_MODIFIER_STEMS = set()
+for _word in _MODIFIERS:
+    _MODIFIER_STEMS |= _stems(_word)
+
+
+def pick_live_product(query, products, pantry=None):
+    """Best Kroger hit for a grocery phrase. None when no hit actually matches the words.
+
+    Handles plurals, brand plus description, one-word compounds (oat milk / oatmilk), and
+    spoken names (coke, oj, mayo, mac and cheese). A bare staple prefers the plain item
+    when a flavored one is in the same hit list. A pantry name overlap wins over that,
+    so "add milk" still resolves to the milk already at home.
+    """
+    if not _norm(query):
+        return None
+    scored = []
+    for product in products or []:
+        rank = _live_rank(query, product)
+        if rank is None:
+            continue
+        name = product.get("name") or ""
+        scored.append((rank, _modifier_penalty(query, name), len(name), name.lower(), product))
+    if not scored:
+        return None
+    scored.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
+    if pantry:
+        hits = [row for row in scored if pantry_name_match(row[4], pantry)]
+        if hits:
+            return hits[0][4]
+    return scored[0][4]
+
+
+def split_grocery_phrases(blob):
+    """Split 'milk and eggs' into two items. Keep single products such as mac and cheese together."""
+    text = re.sub(r"\s+", " ", (blob or "").strip())
+    if not text:
+        return []
+    protected = []
+
+    def hold(match):
+        protected.append(match.group(0))
+        return f" __PHRASE{len(protected) - 1}__ "
+
+    pattern = "|".join(re.escape(phrase) for phrase in sorted(_ONE_PRODUCT, key=len, reverse=True))
+    masked = re.sub(pattern, hold, text, flags=re.I)
+    parts = [part.strip() for part in re.split(r"\s+and\s+|,\s*", masked) if part.strip()]
+    out = []
+    for part in parts:
+        restored = re.sub(r"__PHRASE(\d+)__", lambda match: protected[int(match.group(1))], part)
+        restored = re.sub(r"\s+", " ", restored).strip(" .,!?")
+        restored = re.sub(r"^(?:and|plus)\s+", "", restored, flags=re.I).strip()
+        if restored:
+            out.append(restored)
+    return out
+
+
+def list_line_for_query(cart, query):
+    """List line the shopper means, including plurals that are not a substring of the Kroger name."""
+    items = [line for line in (cart or {}).get("items") or [] if line.get("name")]
+    return pick_live_product(query, items, pantry=None)
+
+
+def _retail_name(name):
+    words = [word for word in _norm(name).split() if word not in _RETAIL_NOISE and not word.isdigit()]
+    return " ".join(words)
+
+
+def _retail_overlap(a, b):
+    if _names_overlap(a, b):
+        return True
+    left, right = _retail_name(a), _retail_name(b)
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
+
+
+def _copy_cart(cart):
+    out = {
+        "items": [dict(line) for line in (cart or {}).get("items") or []],
+        "skipped": list((cart or {}).get("skipped") or []),
+    }
+    for line in out["items"]:
+        if "requesters" in line:
+            line["requesters"] = list(line.get("requesters") or [])
+    return out
+
+
+def bump_repeat_line(cart, product, user_id=None):
+    """Increment an existing line when this is the same retail item in another size. Else (cart, None)."""
+    out = _copy_cart(cart)
+    target = None
+    for line in out["items"]:
+        if _retail_overlap(product.get("name"), line.get("name")):
+            target = line
+            break
+    if target is None:
+        return cart, None
+    target["quantity"] = int(target.get("quantity") or 1) + 1
+    if user_id is not None and "requesters" in target and user_id not in target["requesters"]:
+        target["requesters"].append(user_id)
+    result = {
+        "action": "quantity",
+        "name": target.get("name"),
+        "product_id": str(target.get("product_id")),
+        "quantity": target["quantity"],
+        "store": target.get("store"),
+        "price": target.get("price"),
+    }
+    if target.get("requesters") is not None:
+        result["requesters"] = list(target["requesters"])
+    return out, result
+
+
 def add_to_group_cart(cart, product, user_id, pantry):
     """Skip pantry hits, merge the same product_id, otherwise append cheapest store/price."""
     out = {
@@ -307,6 +614,16 @@ def add_to_personal_list(cart, product, pantry):
     line = {"product_id": pid, "name": name, "quantity": 1, "store": store, "price": price}
     out["items"].append(line)
     return out, {"action": "added", **line}
+
+
+def add_live_product(cart, product, pantry, user_id=None, *, personal=False):
+    """Repeat retail name bumps quantity. Otherwise pantry-skip or insert with cheapest store and price."""
+    updated, bumped = bump_repeat_line(cart, product, None if personal else user_id)
+    if bumped:
+        return updated, bumped
+    if personal:
+        return add_to_personal_list(cart, product, pantry)
+    return add_to_group_cart(cart, product, user_id, pantry)
 
 
 def remove_from_personal_list(cart, product_id):

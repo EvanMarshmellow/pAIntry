@@ -6,7 +6,11 @@ import { spectrum } from "@spectrum-ts/express";
 
 const BACKEND_URL = (process.env.BACKEND_URL || "http://localhost:8000").replace(/\/$/, "");
 const PORT = Number(process.env.PORT || 3000);
+const BACKEND_TIMEOUT_MS = Number(process.env.BACKEND_TIMEOUT_MS || 90000);
 const seen = new Set();
+
+/** @type {import("spectrum-ts").SpectrumApp | null} */
+let spectrumApp = null;
 
 function remember(id) {
   if (!id) return false;
@@ -33,17 +37,38 @@ function backendPath(space, message) {
   return "/agent/message";
 }
 
-async function askBackend({ path, spaceId, sender, text, messageId, spaceType }) {
+async function loadImageBytes(space, content) {
+  if (typeof content.read === "function") {
+    return Buffer.from(await content.read());
+  }
+  if (spectrumApp && content.id) {
+    const im = imessageProvider(spectrumApp);
+    const phone = space?.phone;
+    const file = await im.getAttachment(content.id, phone);
+    if (file && typeof file.read === "function") {
+      return Buffer.from(await file.read());
+    }
+  }
+  throw new Error("could not load image attachment");
+}
+
+async function askBackend({ path, spaceId, sender, text, messageId, spaceType, imageBase64, imageMimeType }) {
+  const payload = {
+    space_id: spaceId,
+    sender,
+    message_id: messageId,
+    space_type: spaceType,
+  };
+  if (text != null && text !== "") payload.text = text;
+  if (imageBase64) {
+    payload.image_base64 = imageBase64;
+    payload.image_mime_type = imageMimeType || "image/jpeg";
+  }
   const res = await fetch(`${BACKEND_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      space_id: spaceId,
-      sender,
-      text,
-      message_id: messageId,
-      space_type: spaceType,
-    }),
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
   });
   if (!res.ok) {
     const body = await res.text();
@@ -54,11 +79,47 @@ async function askBackend({ path, spaceId, sender, text, messageId, spaceType })
 
 async function onMessage(space, message) {
   if (message.direction && message.direction !== "inbound") return;
-  const content = message.content || {};
-  if (content.type && content.type !== "text") return;
-  const text = content.text;
-  if (!text) return;
   if (remember(message.id)) return;
+
+  const content = message.content || {};
+  let text = null;
+  let imageBase64 = null;
+  let imageMimeType = null;
+
+  if (content.type === "attachment") {
+    const mime = content.mimeType || "";
+    if (!mime.startsWith("image/")) {
+      try {
+        await space.send("Send a photo of your receipt or groceries and I'll read it.");
+      } catch (sendErr) {
+        console.error("Failed to send attachment hint:", sendErr);
+      }
+      return;
+    }
+    try {
+      const bytes = await loadImageBytes(space, content);
+      if (bytes.length > 10 * 1024 * 1024) {
+        await space.send("That image is too large — try a smaller receipt photo.");
+        return;
+      }
+      imageBase64 = bytes.toString("base64");
+      imageMimeType = mime;
+      text = content.name || "receipt photo";
+    } catch (err) {
+      console.error("Attachment read error:", err);
+      try {
+        await space.send("I couldn't download that image — try sending it again.");
+      } catch (sendErr) {
+        console.error("Failed to send attachment error:", sendErr);
+      }
+      return;
+    }
+  } else if (!content.type || content.type === "text") {
+    text = content.text;
+    if (!text) return;
+  } else {
+    return;
+  }
 
   const spaceId = space.id || message.space?.id;
   const sender = message.sender?.id;
@@ -72,6 +133,8 @@ async function onMessage(space, message) {
       text,
       messageId: message.id,
       spaceType,
+      imageBase64,
+      imageMimeType,
     });
     if (result.ignored || !result.reply) return;
     await space.send(result.reply);
@@ -91,13 +154,13 @@ const projectSecret = process.env.SPECTRUM_PROJECT_SECRET;
 const webhookSecret = process.env.SPECTRUM_WEBHOOK_SECRET;
 
 if (projectId && projectSecret && webhookSecret) {
-  const app = await Spectrum({
+  spectrumApp = await Spectrum({
     projectId,
     projectSecret,
     providers: [imessageProvider.config()],
     webhookSecret,
   });
-  server.use(spectrum({ app, onMessage }));
+  server.use(spectrum({ app: spectrumApp, onMessage }));
   console.log("Photon webhook mounted at POST /spectrum/webhook");
 } else {
   console.warn(

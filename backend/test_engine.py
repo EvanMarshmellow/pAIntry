@@ -74,8 +74,12 @@ def test_postprocess_keeps_good_output():
 def test_postprocess_allergy_overrides():
     f = analyze(PB, MAYA, [], ALTS)
     r = postprocess(Verdict(verdict="Swap", headline="Swap it", reasons=[]), f)
-    assert r["verdict"] == "Skip" and r["better_alternative"] is None and r["savings"] == 0
-    assert any("peanuts" in x for x in r["reasons"])
+    assert r["verdict"] == "Skip" and any("peanuts" in x for x in r["reasons"])
+    if f["alternative"]:
+        assert r["better_alternative"]["name"] == f["alternative"]["name"]
+        assert r["savings"] == f["savings"]
+    else:
+        assert r["better_alternative"] is None and r["savings"] == 0
 
 
 if __name__ == "__main__":

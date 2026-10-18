@@ -4,6 +4,7 @@ export type User = {
   _id: string
   name: string
   email?: string
+  phone?: string | null
   persona?: string
   /** 0 = not set yet */
   weekly_budget: number
@@ -65,6 +66,23 @@ export type Verdict = {
       protein_g_per_package: number
     } | null
   }
+}
+
+export type PersonalListItem = {
+  product_id: string
+  name: string
+  quantity: number
+  store: string | null
+  price: number | null
+}
+
+export type PersonalList = {
+  user_id: string
+  items: PersonalListItem[]
+  skipped: { name: string; pantry_name?: string }[]
+  total: number
+  count: number
+  action?: string
 }
 
 export type ConvinceInput =

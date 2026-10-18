@@ -8,7 +8,7 @@ import httpx
 
 from app import gemini
 from app.engine import (add_live_product, analyze, cart_summary, cheapest,
-                        empty_personal_list, list_line_for_query, remove_from_personal_list,
+                        clear_personal_list, list_line_for_query, remove_from_personal_list,
                         resolve_product, split_grocery_phrases)
 from app.grok import engine_headline, engine_reasons
 from app.kroger import search_for_list
@@ -22,6 +22,7 @@ Rules:
 - If resolve_product status is unavailable, say Kroger can't be reached and the item was not added.
 - If resolve_product found is false, say it wasn't found at nearby Kroger stores and do not add it.
 - If add_list_item action is skipped, say they already have that pantry item at home.
+- Call clear_list only when they want the entire list deleted. remove_list_item removes one product.
 - Short iMessage, under 5 sentences. No medical advice.
 Reply with ONLY JSON: {"reply":"your text"}"""
 TOOLS = [
@@ -56,10 +57,15 @@ TOOLS = [
     }},
     {"type": "function", "function": {
         "name": "remove_list_item",
-        "description": "Remove a product from the personal list by product_id",
+        "description": "Remove one product from the personal list by product_id or by the words they used",
         "parameters": {"type": "object",
                        "properties": {"product_id": {"type": "string"}},
                        "required": ["product_id"]},
+    }},
+    {"type": "function", "function": {
+        "name": "clear_list",
+        "description": "Remove every item from the personal list. Use only when the person wants the whole list gone.",
+        "parameters": {"type": "object", "properties": {}},
     }},
     {"type": "function", "function": {
         "name": "get_list",
@@ -77,7 +83,8 @@ TOOLS = [
 INTENT_RE = re.compile(
     r"@cartwise\b|\badd\b|\bneed\b|put on (?:my )?(?:the )?list|what'?s on (?:my )?(?:the )?(?:list|cart)|"
     r"show (?:my )?(?:the )?(?:list|cart)\b|\bon (?:my )?list\b|\bremove\b|\bbudget\b|\bexpir|\bpantry\b|"
-    r"should i buy|worth buying|convince|plan (?:my )?grocer|grocery plan|\bswap\b|\bskip\b",
+    r"should i buy|worth buying|convince|plan (?:my )?grocer|grocery plan|\bswap\b|\bskip\b|"
+    r"\b(?:clear|delete|empty)\b.{0,24}\b(?:list|cart)\b",
     re.I,
 )
 LIST_RE = re.compile(
@@ -88,6 +95,10 @@ EXPIRE_RE = re.compile(r"\bexpir", re.I)
 BUDGET_RE = re.compile(r"\bbudget\b|\bspent\b|\bleft this week\b", re.I)
 EVALUATE_RE = re.compile(r"should i buy\s+(.+)|worth buying\s+(.+)|convince me(?: to buy)?\s+(.+)", re.I)
 REMOVE_RE = re.compile(r"\bremove\s+(.+?)(?:\s+from|\s+off)?(?:\s+(?:my )?(?:list|cart))?$", re.I)
+CLEAR_RE = re.compile(
+    r"^(?:please\s+)?(?:clear|remove|delete|empty)(?:\s+out)?\s+(?:my|the)\s+(?:list|cart)\s*$",
+    re.I,
+)
 
 
 def _aware(dt):
@@ -189,6 +200,10 @@ class PersonalContext:
             self.list, result = remove_from_personal_list(self.list, pid)
             self.results.append(result)
             return result
+        if name == "clear_list":
+            self.list, result = clear_personal_list(self.list)
+            self.results.append(result)
+            return result
         if name == "get_list":
             return cart_summary(self.list)
         if name == "evaluate_product":
@@ -245,7 +260,19 @@ def parse_evaluate_query(text):
     return None
 
 
+def _list_text(text):
+    t = re.sub(r"@cartwise\b", " ", text or "", flags=re.I)
+    return re.sub(r"\s+", " ", t).strip(" .,!?")
+
+
+def parse_clear(text):
+    """True when the message asks to wipe the whole list, not one item."""
+    return bool(CLEAR_RE.match(_list_text(text)))
+
+
 def parse_remove_query(text):
+    if parse_clear(text):
+        return None
     m = REMOVE_RE.search((text or "").strip())
     return m.group(1).strip(" .,!?") if m else None
 
@@ -263,6 +290,14 @@ def format_list_reply(results, summary, extras=None):
             lines.append(f"Updated {r['name']} — quantity {r['quantity']} on your list.")
         elif action == "removed":
             lines.append(f"Removed {r['name']} from your list.")
+        elif action == "cleared":
+            n = int(r.get("removed") or 0)
+            if n == 0:
+                lines.append("Your list is already empty.")
+            elif n == 1:
+                lines.append("Cleared 1 item from your list.")
+            else:
+                lines.append(f"Cleared {n} items from your list.")
         elif action == "not_found":
             lines.append("That item is not on your list.")
         elif action == "unknown":
@@ -308,6 +343,9 @@ async def fallback(text, ctx: PersonalContext) -> dict:
             facts = analyze(p, ctx.user, ctx.pantry, ctx._alternatives(p), ctx.week_spent)
             verdict = facts["draft_verdict"]
             extras.append(engine_headline(verdict, facts) + " " + " ".join(engine_reasons(verdict, facts)[:2]))
+    if parse_clear(text):
+        ctx.list, result = clear_personal_list(ctx.list)
+        ctx.results.append(result)
     remove_q = parse_remove_query(text)
     if remove_q:
         line = list_line_for_query(ctx.list, remove_q)
@@ -356,7 +394,7 @@ def _parse_reply(text):
 async def handle(text, ctx: PersonalContext) -> dict:
     if not is_personal_intent(text):
         return {"reply": None, "list": cart_summary(ctx.list), "source": "engine", "ignored": True}
-    if not gemini.api_key():
+    if parse_clear(text) or not gemini.api_key():
         return await fallback(text, ctx)
     msgs = [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"{ctx.user_name} says: {text}"}]

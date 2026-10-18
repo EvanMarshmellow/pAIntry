@@ -5,9 +5,10 @@ import os
 from app.agent import CartContext, fallback
 from app.engine import (
     add_group_pantry_item, add_to_group_cart, analyze, analyze_pantry_food_groups,
-    bump_repeat_line, empty_group_cart, live_search_terms, move_cart_line_to_group_pantry,
-    pantry_edible_grams, pantry_food_group, pick_live_product, remove_group_pantry_item,
-    resolve_product, set_group_pantry_quantity, split_grocery_phrases,
+    bump_repeat_line, clear_personal_list, empty_group_cart, live_search_terms,
+    merge_personal_lists, move_cart_line_to_group_pantry, pantry_edible_grams,
+    pantry_food_group, pick_live_product, remove_group_pantry_item, resolve_product,
+    set_group_pantry_quantity, set_personal_list_quantity, split_grocery_phrases,
 )
 from app.personal_agent import PersonalContext, fallback as personal_fallback, parse_add_queries
 from app.grok import DATA_SOURCES, Verdict, explain, postprocess
@@ -430,6 +431,60 @@ def test_personal_list_adds_live_groceries_not_seed():
         seed, [], {"items": [], "skipped": []}, {"weekly_budget": 60}, "u", "Maya", finder=down)
     missed = asyncio.run(personal_fallback("add milk to my list", offline))
     assert missed["list"]["count"] == 0 and "Kroger" in missed["reply"]
+
+
+def test_clear_personal_list_and_quantity():
+    cart = {"items": [
+        {"product_id": "milk", "name": "Whole Milk", "quantity": 2, "store": "QFC", "price": 3.49},
+        {"product_id": "eggs", "name": "Large Eggs", "quantity": 1, "store": "QFC", "price": 2.99},
+    ], "skipped": [{"name": "Bread", "pantry_name": "Bread"}]}
+    cleared, result = clear_personal_list(cart)
+    assert result == {"action": "cleared", "removed": 2}
+    assert cleared == {"items": [], "skipped": []}
+    empty, again = clear_personal_list(cleared)
+    assert again["removed"] == 0 and empty["items"] == []
+    updated, gone = set_personal_list_quantity(cart, "milk", 0)
+    assert gone["action"] == "removed"
+    assert [line["product_id"] for line in updated["items"]] == ["eggs"]
+    updated, bumped = set_personal_list_quantity(cart, "eggs", 3)
+    eggs = next(line for line in updated["items"] if line["product_id"] == "eggs")
+    assert eggs["quantity"] == 3
+    assert any(line["product_id"] == "milk" for line in updated["items"])
+
+
+def test_merge_personal_lists_sums_quantity():
+    primary = {"items": [{"product_id": "milk", "name": "Milk", "quantity": 1, "price": 3}], "skipped": []}
+    other = {"items": [
+        {"product_id": "milk", "name": "Milk", "quantity": 2, "price": 3},
+        {"product_id": "eggs", "name": "Eggs", "quantity": 1, "price": 2},
+    ], "skipped": []}
+    merged = merge_personal_lists(primary, other)
+    by_id = {line["product_id"]: line["quantity"] for line in merged["items"]}
+    assert by_id == {"milk": 3, "eggs": 1}
+    assert primary["items"][0]["quantity"] == 1
+
+
+def test_personal_clear_phrases():
+    items = [
+        {"product_id": "milk", "name": "Kroger Vitamin D Whole Milk", "quantity": 1, "store": "QFC", "price": 3.49},
+        {"product_id": "eggs", "name": "Large Brown Eggs", "quantity": 1, "store": "QFC", "price": 2.99},
+    ]
+    ctx = PersonalContext(
+        [], [], {"items": [], "skipped": []}, {"weekly_budget": 60}, "u", "Maya")
+    for phrase in ("clear my list", "remove my list", "delete the list", "empty my cart"):
+        ctx.list = {"items": [dict(line) for line in items], "skipped": []}
+        ctx.results = []
+        out = asyncio.run(personal_fallback(phrase, ctx))
+        assert out["list"]["items"] == [], phrase
+        assert "Cleared 2 items" in out["reply"], out["reply"]
+    ctx.list = {"items": [], "skipped": []}
+    ctx.results = []
+    empty = asyncio.run(personal_fallback("clear my list", ctx))
+    assert "already empty" in empty["reply"].lower()
+    ctx.list = {"items": [dict(line) for line in items], "skipped": []}
+    ctx.results = []
+    removed = asyncio.run(personal_fallback("remove milk", ctx))
+    assert [line["name"] for line in removed["list"]["items"]] == ["Large Brown Eggs"]
 
 
 if __name__ == "__main__":

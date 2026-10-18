@@ -1,11 +1,17 @@
-import { useState } from 'react'
+import { useFocusEffect } from 'expo-router'
+import { useCallback, useState } from 'react'
 import { useCart } from '@/lib/cart'
 import { AddPanel } from './AddPanel'
 import { CartPanel } from './CartPanel'
 
 // Wireframe: "Shopping" (empty) and "Shopping - Have things in cart".
 export function ShoppingView() {
-  const { items } = useCart()
+  const { items, refresh } = useCart()
+  useFocusEffect(
+    useCallback(() => {
+      refresh().catch(() => {})
+    }, [refresh]),
+  )
   const count = items.reduce((n, i) => n + i.quantity, 0)
   // Cart size when "+" was tapped. Once something is added the count moves on
   // and the cart shows again, so no effect is needed to reset it.

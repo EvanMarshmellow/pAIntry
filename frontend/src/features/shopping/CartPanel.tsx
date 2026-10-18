@@ -13,7 +13,7 @@ import { useUser } from '@/lib/session'
 import { colors, radius, type } from '@/theme'
 
 export function CartPanel({ onAdd }: { onAdd: () => void }) {
-  const { items, total, dispatch } = useCart()
+  const { items, total, setQuantity, clearList } = useCart()
   const user = useUser()
   const { refresh } = usePantryOverrides()
   const insets = useSafeAreaInsets()
@@ -31,10 +31,11 @@ export function CartPanel({ onAdd }: { onAdd: () => void }) {
           name: item.name,
           quantity: item.quantity,
           unit: 'item',
+          ...(item.productId ? { product_id: item.productId } : {}),
           ...(expires_at ? { expires_at } : {}),
         })
         // Drop each line once saved, so a failure part-way never adds it twice on retry.
-        dispatch({ type: 'setQuantity', name: item.name, quantity: 0 })
+        await setQuantity(item.productId, 0)
       }
       refresh()
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
@@ -46,10 +47,26 @@ export function CartPanel({ onAdd }: { onAdd: () => void }) {
     }
   }
 
-  const setQuantity = useCallback(
-    (name: string, quantity: number) => dispatch({ type: 'setQuantity', name, quantity }),
-    [dispatch],
+  const changeQuantity = useCallback(
+    async (productId: string, quantity: number) => {
+      setError(null)
+      try {
+        await setQuantity(productId, quantity)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not update your list')
+      }
+    },
+    [setQuantity],
   )
+
+  async function onClear() {
+    setError(null)
+    try {
+      await clearList()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not clear your list')
+    }
+  }
 
   const count = items.reduce((n, i) => n + i.quantity, 0)
 
@@ -60,12 +77,13 @@ export function CartPanel({ onAdd }: { onAdd: () => void }) {
         keyExtractor={keyOf}
         renderItem={({ item }) => (
           <CartRow
+            productId={item.productId}
             name={item.name}
             category={item.category}
             store={item.store}
             price={item.price}
             quantity={item.quantity}
-            onChangeQuantity={setQuantity}
+            onChangeQuantity={changeQuantity}
           />
         )}
         contentContainerStyle={styles.content}
@@ -75,6 +93,9 @@ export function CartPanel({ onAdd }: { onAdd: () => void }) {
               <Text style={styles.title}>Your cart</Text>
               <Text style={type.small}>{count === 1 ? '1 item' : `${count} items`}</Text>
             </View>
+            <Pressable onPress={onClear} hitSlop={8} accessibilityLabel="Clear list">
+              <Text style={type.small}>Clear</Text>
+            </Pressable>
             <Pressable onPress={onAdd} style={styles.addButton} accessibilityLabel="Add a product" hitSlop={6}>
               <Ionicons name="add" size={24} color={colors.greenInk} />
             </Pressable>
@@ -98,13 +119,21 @@ export function CartPanel({ onAdd }: { onAdd: () => void }) {
   )
 }
 
-const keyOf = (item: CartItem) => item.name
+const keyOf = (item: CartItem) => item.productId
 
 type RowProps = Omit<CartItem, 'proteinG'> & {
-  onChangeQuantity: (name: string, quantity: number) => void
+  onChangeQuantity: (productId: string, quantity: number) => void
 }
 
-const CartRow = memo(function CartRow({ name, category, store, price, quantity, onChangeQuantity }: RowProps) {
+const CartRow = memo(function CartRow({
+  productId,
+  name,
+  category,
+  store,
+  price,
+  quantity,
+  onChangeQuantity,
+}: RowProps) {
   return (
     <View style={styles.row}>
       <ProductThumb category={category} size={64} />
@@ -114,14 +143,14 @@ const CartRow = memo(function CartRow({ name, category, store, price, quantity, 
         <View style={styles.rowFooter}>
           <View style={styles.stepper}>
             <Pressable
-              onPress={() => onChangeQuantity(name, quantity - 1)}
+              onPress={() => onChangeQuantity(productId, quantity - 1)}
               hitSlop={8}
               accessibilityLabel={quantity === 1 ? `Remove ${name}` : `Decrease ${name}`}
             >
               <Ionicons name={quantity === 1 ? 'trash-outline' : 'remove'} size={16} color={colors.muted} />
             </Pressable>
             <Text style={styles.qty}>{quantity}</Text>
-            <Pressable onPress={() => onChangeQuantity(name, quantity + 1)} hitSlop={8} accessibilityLabel={`Increase ${name}`}>
+            <Pressable onPress={() => onChangeQuantity(productId, quantity + 1)} hitSlop={8} accessibilityLabel={`Increase ${name}`}>
               <Ionicons name="add" size={16} color={colors.muted} />
             </Pressable>
           </View>
@@ -135,7 +164,7 @@ const CartRow = memo(function CartRow({ name, category, store, price, quantity, 
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { paddingHorizontal: 20, paddingBottom: 24 },
-  header: { flexDirection: 'row', alignItems: 'center', paddingBottom: 8 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingBottom: 8 },
   headerText: { flex: 1, gap: 2 },
   title: { fontSize: 17, fontWeight: '600', color: colors.ink },
   addButton: {

@@ -645,6 +645,55 @@ def remove_from_personal_list(cart, product_id):
     return out, {"action": "removed", "name": removed_name, "product_id": pid}
 
 
+def set_personal_list_quantity(cart, product_id, quantity):
+    """Set one line's quantity. Quantity <= 0 removes that line only."""
+    out = {
+        "items": [dict(line) for line in (cart or {}).get("items") or []],
+        "skipped": list((cart or {}).get("skipped") or []),
+    }
+    pid = str(product_id)
+    for line in out["items"]:
+        if str(line.get("product_id")) != pid:
+            continue
+        if float(quantity) <= 0:
+            out["items"] = [item for item in out["items"] if str(item.get("product_id")) != pid]
+            return out, {"action": "removed", "name": line.get("name"), "product_id": pid, "quantity": 0}
+        line["quantity"] = int(quantity)
+        return out, {"action": "quantity", "name": line.get("name"), "product_id": pid,
+                     "quantity": line["quantity"], "store": line.get("store"), "price": line.get("price")}
+    return out, {"action": "not_found", "product_id": pid}
+
+
+def clear_personal_list(cart):
+    """Drop every line and every pantry skip."""
+    removed = len((cart or {}).get("items") or [])
+    return empty_personal_list(), {"action": "cleared", "removed": removed}
+
+
+def merge_personal_lists(primary, other):
+    """Copy `other` onto `primary`. The same product_id sums quantity."""
+    out = {
+        "items": [dict(line) for line in (primary or {}).get("items") or []],
+        "skipped": [dict(line) for line in (primary or {}).get("skipped") or []],
+    }
+    index = {str(line.get("product_id")): line for line in out["items"]}
+    for line in (other or {}).get("items") or []:
+        pid = str(line.get("product_id"))
+        if pid in index:
+            index[pid]["quantity"] = int(index[pid].get("quantity") or 1) + int(line.get("quantity") or 1)
+        else:
+            copied = dict(line)
+            out["items"].append(copied)
+            index[pid] = copied
+    seen = {(line.get("name"), line.get("pantry_name")) for line in out["skipped"]}
+    for line in (other or {}).get("skipped") or []:
+        key = (line.get("name"), line.get("pantry_name"))
+        if key not in seen:
+            out["skipped"].append(dict(line))
+            seen.add(key)
+    return out
+
+
 # --- Pantry food-group mix (classic pyramid, calorie-based %) ---
 
 FOOD_GROUPS = ("grains", "vegetables", "fruits", "proteins_dairy", "sweets_fats")

@@ -3,7 +3,7 @@ import * as Haptics from 'expo-haptics'
 import { useEffect, useRef, useState } from 'react'
 import { Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { Button, ButtonText } from '@/components/Button'
+import { Button, ButtonIcon, ButtonText } from '@/components/Button'
 import { COMMON_ALLERGIES, loadAllergies, normalizeAllergy, saveAllergies } from '@/lib/allergies'
 import { ApiError, api } from '@/lib/api'
 import { useSession } from '@/lib/session'
@@ -49,7 +49,7 @@ export default function SignIn() {
   // Set once a code was sent; switches the screen to the code step.
   const [sentTo, setSentTo] = useState<string | null>(null)
   const [code, setCode] = useState('')
-  const [pending, setPending] = useState<'send' | 'verify' | 'finish' | null>(null)
+  const [pending, setPending] = useState<'send' | 'verify' | 'google' | 'finish' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // Set once the person is verified; switches the screen to the allergies step.
@@ -77,18 +77,54 @@ export default function SignIn() {
     await askAllergies(user_id)
   }
 
-  // On web, opening the emailed magic link lands here with the session in the URL.
+  function exchangeInBackground(accessToken: string) {
+    if (exchanged.current === accessToken) return
+    setPending('verify')
+    exchange(accessToken)
+      .catch((e) => {
+        exchanged.current = null
+        setError(exchangeError(e))
+      })
+      .finally(() => setPending(null))
+  }
+
+  // Pick up a Supabase session that already exists: back from Google or an
+  // emailed magic link (web, session in the URL), or still signed in to Supabase.
   useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) exchangeInBackground(data.session.access_token)
+    })
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event !== 'SIGNED_IN' || !session || exchanged.current === session.access_token) return
-      setPending('verify')
-      exchange(session.access_token)
-        .catch((e) => setError(exchangeError(e)))
-        .finally(() => setPending(null))
+      if (event === 'SIGNED_IN' && session) exchangeInBackground(session.access_token)
     })
     return () => data.subscription.unsubscribe()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Web only: Supabase redirects to Google and back to /sign-in, where the effect above finishes.
+  async function google() {
+    setPending('google')
+    setError(null)
+    // A disabled provider would strand the person on Supabase's raw JSON error page.
+    const settings = await fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/auth/v1/settings`, {
+      headers: { apikey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '' },
+    })
+      .then((r) => r.json())
+      .catch(() => null)
+    if (settings && !settings.external?.google) {
+      setError('Google sign-in isn’t turned on yet. Use your email instead.')
+      setPending(null)
+      return
+    }
+    const { error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: `${window.location.origin}/sign-in` },
+    })
+    if (oauthError) {
+      setError(`Google sign-in isn't available right now (${oauthError.message}).`)
+      setPending(null)
+    }
+  }
 
   async function sendCode(resend = false) {
     if (!canSend) return
@@ -127,7 +163,11 @@ export default function SignIn() {
     setError(null)
     setNotice(null)
     try {
-      const { data, error: otpError } = await supabase.auth.verifyOtp({ email: sentTo, token: code, type: 'email' })
+      let { data, error: otpError } = await supabase.auth.verifyOtp({ email: sentTo, token: code, type: 'email' })
+      if (otpError || !data.session) {
+        // A first-time email gets the "Confirm signup" code, which checks as type 'signup'.
+        ;({ data, error: otpError } = await supabase.auth.verifyOtp({ email: sentTo, token: code, type: 'signup' }))
+      }
       if (otpError || !data.session) throw otpError ?? new Error('No session')
       // onAuthStateChange also fires SIGNED_IN; exchanging here keeps the button's spinner honest.
       await exchange(data.session.access_token)
@@ -286,9 +326,20 @@ export default function SignIn() {
               accessibilityLabel="Email"
             />
             {error ? <Text style={[type.small, styles.error]}>{error}</Text> : null}
-            <Button onPress={() => sendCode()} disabled={!canSend} loading={pending === 'send'}>
+            <Button onPress={() => sendCode()} disabled={!canSend || pending !== null} loading={pending === 'send'}>
               <ButtonText>Email me a code</ButtonText>
             </Button>
+            {Platform.OS === 'web' ? (
+              <Button
+                variant="secondary"
+                onPress={google}
+                disabled={pending !== null}
+                loading={pending === 'google' || pending === 'verify'}
+              >
+                <ButtonIcon name="logo-google" />
+                <ButtonText>Continue with Google</ButtonText>
+              </Button>
+            ) : null}
           </View>
         )}
       </KeyboardAvoidingView>

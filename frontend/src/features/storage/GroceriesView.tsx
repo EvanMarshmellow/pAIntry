@@ -4,10 +4,11 @@ import { router } from 'expo-router'
 import { useState, type ComponentProps } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Notice } from '@/components/Notice'
-import type { PantryItem } from '@/lib/api'
+import { api, type PantryItem } from '@/lib/api'
 import { daysUntil, EXPIRY_URGENT_DAYS, expiryLabel } from '@/lib/format'
 import { useGroupCart } from '@/lib/groupCart'
 import { shelfOf, usePantryOverrides } from '@/lib/pantry'
+import { useUser } from '@/lib/session'
 import type { AsyncState } from '@/lib/useAsync'
 import { colors, radius, shelves, type, type ShelfId } from '@/theme'
 
@@ -17,10 +18,26 @@ type Props = { pantry: AsyncState<PantryItem[]> }
 
 // Wireframes: "Storage", "Storage-Fresh product", "Storage-Pantry", "Storage-Leftover".
 export function GroceriesView({ pantry }: Props) {
-  const { removed, moved, remove, move } = usePantryOverrides()
+  const user = useUser()
+  const { removed, moved, remove, restore, move, refresh } = usePantryOverrides()
   const { groupCartId } = useGroupCart()
   const [shelf, setShelf] = useState<ShelfId>('fresh')
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const tint = shelves[shelf]
+
+  // Finished and Trashed both delete the line on the server. Hide it now; bring it back on failure.
+  function deleteItem(item: PantryItem) {
+    setDeleteError(null)
+    remove(item._id)
+    api.deletePantryItem(user._id, item._id).then(
+      () => refresh(),
+      (e: Error) => {
+        restore(item._id)
+        setDeleteError(`Couldn’t remove ${item.name}: ${e.message}`)
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+      },
+    )
+  }
 
   const visible = (pantry.data ?? []).filter(
     (item) => !removed.has(item._id) && (moved[item._id] ?? shelfOf(item)) === shelf,
@@ -65,6 +82,7 @@ export function GroceriesView({ pantry }: Props) {
         </View>
 
         <View style={[styles.panel, { backgroundColor: tint.panel }, shelf === 'fresh' && styles.panelFirst, shelf === 'leftover' && styles.panelLast]}>
+          {deleteError ? <Text style={[type.small, styles.deleteError]}>{deleteError}</Text> : null}
           {pantry.status === 'error' && !pantry.data ? (
             <Notice message={pantry.error.message} onRetry={pantry.reload} />
           ) : !pantry.data ? (
@@ -77,8 +95,8 @@ export function GroceriesView({ pantry }: Props) {
                 key={item._id}
                 item={item}
                 color={tint.card}
-                onFinished={() => remove(item._id)}
-                onTrashed={() => remove(item._id)}
+                onFinished={() => deleteItem(item)}
+                onTrashed={() => deleteItem(item)}
                 onMoveToFridge={
                   shelf === 'pantry'
                     ? () => {
@@ -166,6 +184,7 @@ function ItemAction({ label, onPress }: { label: string; onPress: () => void }) 
 }
 
 const styles = StyleSheet.create({
+  deleteError: { color: colors.danger, paddingBottom: 8 },
   content: { paddingHorizontal: 20, paddingBottom: 24, gap: 24 },
   actions: { flexDirection: 'row', gap: 10 },
   tile: {

@@ -34,10 +34,11 @@ export function AddPanel({ onDone }: { onDone?: () => void }) {
   const [query, setQuery] = useState('')
   const products = useAsync(() => api.products().then((list) => list.map(toRow)), 'products')
 
+  // No browsable "All products" list: products only show as search results.
+  const searching = query.trim().length > 0
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
-    const all = products.data ?? []
-    return q ? all.filter((r) => r.name.toLowerCase().includes(q)) : all
+    return q ? (products.data ?? []).filter((r) => r.name.toLowerCase().includes(q)) : []
   }, [products.data, query])
 
   const openProduct = useCallback((id: string) => {
@@ -91,11 +92,11 @@ export function AddPanel({ onDone }: { onDone?: () => void }) {
             <Ionicons name="chevron-forward" size={18} color={colors.greenInk} />
           </Pressable>
 
-          <Text style={styles.sectionLabel}>{query.trim() ? 'Results' : 'All products'}</Text>
+          {searching ? <Text style={styles.sectionLabel}>Results</Text> : null}
         </View>
       }
       ListEmptyComponent={
-        products.status === 'error' ? (
+        !searching ? undefined : products.status === 'error' ? (
           <Notice message={products.error.message} onRetry={products.reload} />
         ) : products.status === 'success' ? (
           <Text style={[type.small, styles.center]}>No products match “{query}”.</Text>

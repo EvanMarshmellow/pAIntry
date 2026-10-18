@@ -1,12 +1,14 @@
 import * as Haptics from 'expo-haptics'
-import { router } from 'expo-router'
-import { useState } from 'react'
+import { router, useFocusEffect } from 'expo-router'
+import { useCallback, useState } from 'react'
 import { StyleSheet, Text, TextInput, View } from 'react-native'
-import { Button, ButtonText } from '@/components/Button'
+import { Button, ButtonIcon, ButtonText } from '@/components/Button'
 import { SheetHeader } from '@/components/SheetHeader'
 import { Segmented } from '@/components/Segmented'
 import { api } from '@/lib/api'
+import { lookupBarcode, searchQuery } from '@/lib/openFoodFacts'
 import { LEFTOVER_UNIT, usePantryOverrides } from '@/lib/pantry'
+import { consumeScannedBarcode } from '@/lib/scannedBarcode'
 import { useUser } from '@/lib/session'
 import { colors, radius, shelves, type, type ShelfId } from '@/theme'
 
@@ -50,6 +52,30 @@ export default function AddItem() {
   const [expiresOn, setExpiresOn] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [lookingUp, setLookingUp] = useState(false)
+  const [scanNote, setScanNote] = useState<string | null>(null)
+
+  // Back from the scanner: name the product with Open Food Facts, then the user saves it.
+  useFocusEffect(
+    useCallback(() => {
+      const code = consumeScannedBarcode()
+      if (!code) return
+      setLookingUp(true)
+      setError(null)
+      setScanNote(null)
+      lookupBarcode(code)
+        .then((product) => {
+          if (product) {
+            setName(searchQuery(product))
+            setScanNote(product.quantity ? `Found ${product.quantity}` : 'Found it')
+            setShelf('pantry')
+          } else {
+            setScanNote(`Barcode ${code} isn’t in Open Food Facts. Type the name instead.`)
+          }
+        })
+        .finally(() => setLookingUp(false))
+    }, []),
+  )
 
   const effectiveDate = expiresOn ?? toInputDate(addDays(DEFAULT_DAYS[shelf]))
   const parsed = parseInputDate(effectiveDate)
@@ -80,6 +106,17 @@ export default function AddItem() {
     <View style={styles.sheet}>
       <SheetHeader />
       <Segmented options={SHELF_OPTIONS} value={shelf} onChange={setShelf} />
+
+      <Button
+        variant="secondary"
+        onPress={() => router.push('/scan?for=pantry')}
+        loading={lookingUp}
+        disabled={saving}
+      >
+        <ButtonIcon name="barcode-outline" />
+        <ButtonText>Scan barcode</ButtonText>
+      </Button>
+      {scanNote ? <Text style={type.small}>{scanNote}</Text> : null}
 
       <TextInput
         value={name}

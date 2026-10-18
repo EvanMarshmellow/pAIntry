@@ -63,7 +63,6 @@ function Routes() {
           name="capture-receipt"
           options={{ presentation: 'fullScreenModal', animation: 'fade' }}
         />
-        <Stack.Screen name="checkout" options={sheet} />
         <Stack.Screen name="add-item" options={sheet} />
         <Stack.Screen name="upload-receipt" options={sheet} />
         <Stack.Screen name="group-cart" options={sheet} />

@@ -30,7 +30,7 @@ Expo SDK 57 / React Native 0.86 / React 19 (pinned to 57 to match the App Store 
 
 ## Architecture
 
-- `src/app/`: expo-router routes only. `_layout.tsx` nests the providers (Session → Cart → Pantry → GroupCart) and uses `Stack.Protected` to gate everything behind sign-in. `convince`, `scan`, `checkout`, `add-item` and `profile` are modal or form-sheet routes over `index`.
+- `src/app/`: expo-router routes only. `_layout.tsx` nests the providers (Session → Cart → Pantry → GroupCart) and uses `Stack.Protected` to gate everything behind sign-in. `convince`, `scan`, `add-item` and `profile` are modal or form-sheet routes over `index`.
 - `src/features/`: the two halves of the home screen. `index.tsx` switches between Shopping and Storage with a segmented control at the top, as in the Figma wireframe. This is deliberately not a tab navigator.
 - `src/lib/api.ts`: the only place that talks to the backend, with typed responses. The base URL comes from `EXPO_PUBLIC_API_URL`, or else the deployed `https://paintry.onrender.com` (free tier: first request after idle can take ~30 s, so the timeout is 45 s).
 - `src/lib/useAsync.ts`: a small fetch hook keyed by a string. Change the key to refetch, or call `reload()`. It's written to pass the React Compiler lint (no setState in effect bodies), so keep it that way.
@@ -38,7 +38,12 @@ Expo SDK 57 / React Native 0.86 / React 19 (pinned to 57 to match the App Store 
 
 ### Backend contract (`../backend/app/main.py`)
 
-These endpoints are used: `GET /users/{id}`, `GET /products`, `GET|POST /users/{id}/pantry`, `GET /users/{id}/savings`, `POST /convince-me`, `POST /users/{id}/pantry/receipt`.
+These endpoints are used: `GET /users/{id}`, `GET /products`, `GET|POST /users/{id}/pantry`, `GET /users/{id}/savings`, `POST /convince-me`, `POST /users/{id}/pantry/receipt`, `DELETE /users/{id}/pantry/{item_id}`, `GET /users/{id}/pantry/food-groups`, `POST /login/supabase`. API docs: `backend_docs/HuskyCartAPI.pdf`.
+
+- **Storage → Nutrition** follows the Figma frame `5:319`: five food-group bars from `/pantry/food-groups` (`pct` = calorie share vs the pyramid `target_pct`, shown as "Goal N%"; colors in `foodGroupBars` in `src/theme.ts`; low groups red, high amber) and `pantry_balance_hint` as the suggestion; savings / use-first / allergy cards sit below.
+- **Finished / Trashed** hide the item at once and call `DELETE /users/{id}/pantry/{item_id}`; on failure `restore` brings it back with an error.
+- **Cart → Add to pantry** replaced checkout (no checkout screen): Keep / Switch in Convince Me still add to the cart, and the cart button posts every line to the pantry (fresh categories get a default expiry, `defaultExpiry` in `src/lib/pantry.tsx`). The Shopping home has no "All products" list; products appear only as search results.
+- **Pantry adds** (Add item, receipt, cart) call `POST /users/{id}/pantry` with no demo fallback, so failures show. Add item has **Scan barcode**: `/scan?for=pantry` hands the code back (`src/lib/scannedBarcode.ts`), Open Food Facts names it, the user saves.
 
 - **Receipt OCR** runs on the device: `src/lib/perceptron.ts` calls Perceptron Mk1.5 (`EXPO_PUBLIC_PERCEPTRON_API_KEY`) with the same JSON schema as `backend/app/perceptron_ocr.py`, then pushes the result to `/users/{id}/pantry/receipt` for catalog matching. Confirmed lines are saved with `POST /users/{id}/pantry`.
 - **Barcode scans** are named by Open Food Facts (`src/lib/openFoodFacts.ts`) and sent to `/convince-me` as a `query`, because the seeded catalog has fake barcodes. Unknown barcodes fall back to `barcode`, then to demo data.
@@ -46,13 +51,13 @@ These endpoints are used: `GET /users/{id}`, `GET /products`, `GET|POST /users/{
 - Trust principle: **code does the math, the LLM writes the words**. Prices, savings and verdicts come from the backend's `engine`. The client only sums cart totals. When adding to the cart, use `verdict.engine.product` / `.alternative`, not model text.
 - `/convince-me` may return `source: "engine"` (no AI key, or a timeout). The UI must look complete in that case.
 - `/convince-me` logs Swap savings to the ledger on every call (backend default `log: true`).
-- Sign-in is a Supabase email code (`src/lib/supabase.ts`, `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_ANON_KEY`): `signInWithOtp` → `verifyOtp`, then the Supabase `access_token` goes to `POST /login/supabase`, which returns the Mongo `user_id` (creating the user on first sign-in). On web, a magic link also works (`detectSessionInUrl`). `SessionProvider` saves `user_id` in AsyncStorage (localStorage on web) and restores it on launch; `_layout.tsx` gates screens with `Stack.Protected`. `api.user` has no demo fallback. Typing `hello@uw.edu` (or `0000000000`) is a demo bypass for UI testing: no code, signs in as Maya. Supabase storage is off during server rendering (no `window`).
+- Sign-in is a Supabase email code (`src/lib/supabase.ts`, `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_ANON_KEY`): `signInWithOtp` → `verifyOtp`, then the Supabase `access_token` goes to `POST /login/supabase`, which returns the Mongo `user_id` (creating the user on first sign-in). `verifyOtp` tries type `email`, then `signup` (first-time emails get the Confirm-signup code). On web there is also **Continue with Google** (`signInWithOAuth`, back to `/sign-in`; shows an error instead of redirecting while the provider is off) and magic links work (`detectSessionInUrl`). The sign-in screen exchanges any existing Supabase session on mount, so `signOut` waits for `supabase.auth.signOut()` before clearing the user. `SessionProvider` saves `user_id` in AsyncStorage (localStorage on web) and restores it on launch; `_layout.tsx` gates screens with `Stack.Protected`. `api.user` has no demo fallback. Typing `hello@uw.edu` (or `0000000000`) is a demo bypass for UI testing: no code, signs in as Maya. Supabase storage is off during server rendering (no `window`).
 - **Allergies** are picked at sign-in (after the code step) and saved per user on the device (`src/lib/allergies.ts`, key `paintry.allergies.<userId>`); the session overrides the server's `allergies` with them. To sync, make `api.updateAllergies` match the backend endpoint and set `SYNC_TO_SERVER = true`. Until then `/convince-me` still uses the server's list.
 
 ### Client-only state (no backend endpoint yet)
 
-- **Cart and checkout** live in `CartProvider`; checkout is a mock payment.
+- **Cart** lives in `CartProvider` (device only) until it is added to the pantry.
 - **Pantry shelf** is derived in `shelfOf()`: unit `leftover` → Leftover, expiring within 14 days → Fresh, else Pantry.
-- **Finished / Trashed / Move to fridge** are session-only overrides in `PantryProvider`.
+- **Move to fridge** is a session-only override in `PantryProvider`.
 
 When the backend adds endpoints for any of these, replace the local state rather than layering on top of it.

@@ -14,7 +14,7 @@ export default function Profile() {
   const { dispatch } = useCart()
 
   const rows: [string, string][] = [
-    ['Weekly budget', formatPrice(user.weekly_budget)],
+    ['Weekly budget', user.weekly_budget > 0 ? formatPrice(user.weekly_budget) : 'Not set'],
     ['Protein goal', user.goals.protein_g_per_day ? `${user.goals.protein_g_per_day} g / day` : 'Not set'],
     ['Allergies', user.allergies.length ? user.allergies.join(', ') : 'None'],
   ]

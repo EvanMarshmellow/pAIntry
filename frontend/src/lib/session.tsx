@@ -78,10 +78,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setUser(next)
       },
       signOut: () => {
-        void supabase.auth.signOut()
-        forget()
-        setUser(null)
-        setStatus('ready')
+        // Wait for Supabase to drop its session first: the sign-in screen picks up
+        // any existing Supabase session on mount and would sign straight back in.
+        supabase.auth
+          .signOut()
+          .catch(() => {})
+          .finally(() => {
+            forget()
+            setUser(null)
+            setStatus('ready')
+          })
       },
       retry: () => {
         setStatus('restoring')

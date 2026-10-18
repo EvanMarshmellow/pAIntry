@@ -1,7 +1,8 @@
-import { DEMO_PANTRY, DEMO_PRODUCTS, demoAddPantry, demoConvince } from './demoData'
+import { DEMO_PANTRY, DEMO_PRODUCTS, demoConvince } from './demoData'
 import { lookupBarcode, searchQuery } from './openFoodFacts'
 import type {
   ConvinceInput,
+  FoodGroups,
   NewPantryItem,
   PantryItem,
   Product,
@@ -13,6 +14,8 @@ import type {
 
 export type {
   ConvinceInput,
+  FoodGroupId,
+  FoodGroups,
   NewPantryItem,
   PantryItem,
   Product,
@@ -60,6 +63,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
+// New accounts have no name, budget, goals or allergies yet; fill safe defaults
+// so screens can read every field.
+function toUser(raw: Partial<User> & { _id: string }): User {
+  const fromEmail = raw.email?.split('@')[0] ?? ''
+  return {
+    ...raw,
+    name: raw.name?.trim() || (fromEmail ? fromEmail.charAt(0).toUpperCase() + fromEmail.slice(1) : 'Friend'),
+    weekly_budget: typeof raw.weekly_budget === 'number' ? raw.weekly_budget : 0,
+    goals: raw.goals ?? {},
+    allergies: Array.isArray(raw.allergies) ? raw.allergies : [],
+  }
+}
+
 async function withDemoFallback<T>(live: () => Promise<T>, demo: () => T): Promise<T> {
   try {
     return await live()
@@ -72,7 +88,7 @@ async function withDemoFallback<T>(live: () => Promise<T>, demo: () => T): Promi
 
 export const api = {
   // No demo fallback: a signed-in user must be the real account.
-  user: (id: string) => request<User>(`/users/${id}`),
+  user: async (id: string) => toUser(await request<Partial<User> & { _id: string }>(`/users/${id}`)),
   // Not live yet: the backend has no allergies endpoint. Adjust the path/body to
   // match it, then set SYNC_TO_SERVER in allergies.ts.
   updateAllergies: (userId: string, allergies: string[]) =>
@@ -86,15 +102,17 @@ export const api = {
   products: () => withDemoFallback(() => request<Product[]>('/products'), () => DEMO_PRODUCTS),
   pantry: (userId: string) =>
     withDemoFallback(() => request<PantryItem[]>(`/users/${userId}/pantry`), () => DEMO_PANTRY),
+  // No demo fallback: a failed save must surface, not pretend the item was stored.
   addPantryItem: (userId: string, item: NewPantryItem) =>
-    withDemoFallback(
-      () =>
-        request<PantryItem>(`/users/${userId}/pantry`, {
-          method: 'POST',
-          body: JSON.stringify(item),
-        }),
-      () => demoAddPantry(item),
-    ),
+    request<PantryItem>(`/users/${userId}/pantry`, {
+      method: 'POST',
+      body: JSON.stringify(item),
+    }),
+  // Finished / Trashed on a shelf item.
+  deletePantryItem: (userId: string, itemId: string) =>
+    request<{ deleted: boolean; item_id: string }>(`/users/${userId}/pantry/${itemId}`, { method: 'DELETE' }),
+  // Pantry mix across five food groups (Storage → Nutrition).
+  foodGroups: (userId: string) => request<FoodGroups>(`/users/${userId}/pantry/food-groups`),
   savings: (_userId: string) =>
     withDemoFallback(
       () => request<{ total_saved: number; entries: number }>(`/users/${_userId}/savings`),

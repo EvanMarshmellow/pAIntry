@@ -1,17 +1,50 @@
 import Ionicons from '@expo/vector-icons/Ionicons'
-import { router } from 'expo-router'
-import { memo, useCallback } from 'react'
+import * as Haptics from 'expo-haptics'
+import { memo, useCallback, useState } from 'react'
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Button, ButtonText } from '@/components/Button'
 import { ProductThumb } from '@/components/ProductThumb'
+import { api } from '@/lib/api'
 import { useCart, type CartItem } from '@/lib/cart'
 import { formatPrice } from '@/lib/format'
+import { defaultExpiry, usePantryOverrides } from '@/lib/pantry'
+import { useUser } from '@/lib/session'
 import { colors, radius, type } from '@/theme'
 
 export function CartPanel({ onAdd }: { onAdd: () => void }) {
   const { items, total, dispatch } = useCart()
+  const user = useUser()
+  const { refresh } = usePantryOverrides()
   const insets = useSafeAreaInsets()
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Replaces checkout: everything kept or swapped into the cart goes into the pantry.
+  async function addToPantry() {
+    setSaving(true)
+    setError(null)
+    try {
+      for (const item of items) {
+        const expires_at = defaultExpiry(item.category)
+        await api.addPantryItem(user._id, {
+          name: item.name,
+          quantity: item.quantity,
+          unit: 'item',
+          ...(expires_at ? { expires_at } : {}),
+        })
+        // Drop each line once saved, so a failure part-way never adds it twice on retry.
+        dispatch({ type: 'setQuantity', name: item.name, quantity: 0 })
+      }
+      refresh()
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not add to your pantry')
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const setQuantity = useCallback(
     (name: string, quantity: number) => dispatch({ type: 'setQuantity', name, quantity }),
@@ -55,8 +88,10 @@ export function CartPanel({ onAdd }: { onAdd: () => void }) {
         }
       />
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-        <Button onPress={() => router.push('/checkout')}>
-          <ButtonText>Checkout · {formatPrice(total)}</ButtonText>
+        {error ? <Text style={[type.small, styles.error]}>{error}</Text> : null}
+        <Button onPress={addToPantry} loading={saving} disabled={items.length === 0}>
+          <Ionicons name="file-tray-full-outline" size={18} color={colors.greenInk} />
+          <ButtonText>Add to pantry</ButtonText>
         </Button>
       </View>
     </View>
@@ -134,5 +169,6 @@ const styles = StyleSheet.create({
   price: { fontSize: 15, fontWeight: '600', color: colors.ink, fontVariant: ['tabular-nums'] },
   totalRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'baseline', gap: 10, paddingTop: 20 },
   total: { fontSize: 17, fontWeight: '700', color: colors.ink, fontVariant: ['tabular-nums'] },
-  footer: { paddingHorizontal: 20, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  error: { color: colors.danger, textAlign: 'center' },
+  footer: { gap: 8, paddingHorizontal: 20, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
 })

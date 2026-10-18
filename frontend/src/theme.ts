@@ -22,6 +22,16 @@ export const shelves: Record<ShelfId, { label: string; panel: string; card: stri
   leftover: { label: 'Leftover', panel: '#E3F1FF', card: '#90D5FF' },
 }
 
+// Storage-Nutrition bars, top to bottom in the Figma frame (pink, yellow, green, blue, lavender).
+// Keys match GET /users/{id}/pantry/food-groups.
+export const foodGroupBars = [
+  { id: 'fruits', label: 'Fruits', color: shelves.fresh.card },
+  { id: 'grains', label: 'Grains', color: shelves.pantry.card },
+  { id: 'vegetables', label: 'Vegetables', color: colors.green },
+  { id: 'proteins_dairy', label: 'Protein & dairy', color: shelves.leftover.card },
+  { id: 'sweets_fats', label: 'Sweets & fats', color: '#CCCCFF' },
+] as const
+
 export const verdictColors = {
   Buy: { bg: '#E5F5E0', ink: '#24532C' },
   Swap: { bg: '#FFF4CC', ink: '#7A5A00' },

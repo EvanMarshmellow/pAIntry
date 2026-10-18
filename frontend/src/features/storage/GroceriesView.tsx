@@ -5,27 +5,23 @@ import { useState, type ComponentProps } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Notice } from '@/components/Notice'
 import { api, type PantryItem } from '@/lib/api'
-import { daysUntil, EXPIRY_URGENT_DAYS, expiryLabel } from '@/lib/format'
+import { daysUntil, EXPIRY_URGENT_DAYS, formatDate } from '@/lib/format'
 import { useGroupCart } from '@/lib/groupCart'
-import { shelfOf, usePantryOverrides } from '@/lib/pantry'
+import { usePantryOverrides } from '@/lib/pantry'
 import { useUser } from '@/lib/session'
 import type { AsyncState } from '@/lib/useAsync'
-import { colors, radius, shelves, type, type ShelfId } from '@/theme'
-
-const SHELF_ORDER: ShelfId[] = ['fresh', 'pantry', 'leftover']
+import { colors, radius, type } from '@/theme'
 
 type Props = { pantry: AsyncState<PantryItem[]> }
 
-// Wireframes: "Storage", "Storage-Fresh product", "Storage-Pantry", "Storage-Leftover".
+// Wireframe "Storage" plus one food frame per pantry item (no Fresh / Pantry / Leftover shelves).
 export function GroceriesView({ pantry }: Props) {
   const user = useUser()
-  const { removed, moved, remove, restore, move, refresh } = usePantryOverrides()
+  const { removed, remove, restore, refresh } = usePantryOverrides()
   const { groupCartId } = useGroupCart()
-  const [shelf, setShelf] = useState<ShelfId>('fresh')
   const [deleteError, setDeleteError] = useState<string | null>(null)
-  const tint = shelves[shelf]
 
-  // Finished and Trashed both delete the line on the server. Hide it now; bring it back on failure.
+  // Completed deletes the line on the server. Hide it now; bring it back on failure.
   function deleteItem(item: PantryItem) {
     setDeleteError(null)
     remove(item._id)
@@ -39,9 +35,11 @@ export function GroceriesView({ pantry }: Props) {
     )
   }
 
-  const visible = (pantry.data ?? []).filter(
-    (item) => !removed.has(item._id) && (moved[item._id] ?? shelfOf(item)) === shelf,
-  )
+  // One list: soonest to expire first, items without a date last
+  // (the API's expires_at sort puts missing dates first).
+  const visible = (pantry.data ?? [])
+    .filter((item) => !removed.has(item._id))
+    .sort((a, b) => expiryTime(a) - expiryTime(b))
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
@@ -60,56 +58,23 @@ export function GroceriesView({ pantry }: Props) {
         />
       </View>
 
-      <View>
-        <View style={styles.tabs} accessibilityRole="tablist">
-          {SHELF_ORDER.map((id) => {
-            const active = id === shelf
-            return (
-              <Pressable
-                key={id}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: active }}
-                onPress={() => {
-                  Haptics.selectionAsync()
-                  setShelf(id)
-                }}
-                style={[styles.tab, active && { backgroundColor: shelves[id].panel }]}
-              >
-                <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{shelves[id].label}</Text>
-              </Pressable>
-            )
-          })}
-        </View>
-
-        <View style={[styles.panel, { backgroundColor: tint.panel }, shelf === 'fresh' && styles.panelFirst, shelf === 'leftover' && styles.panelLast]}>
-          {deleteError ? <Text style={[type.small, styles.deleteError]}>{deleteError}</Text> : null}
-          {pantry.status === 'error' && !pantry.data ? (
-            <Notice message={pantry.error.message} onRetry={pantry.reload} />
-          ) : !pantry.data ? (
-            <ActivityIndicator color={colors.muted} style={styles.spinner} />
-          ) : visible.length === 0 ? (
-            <Text style={[type.small, styles.empty]}>Nothing on this shelf.</Text>
-          ) : (
-            visible.map((item) => (
-              <ShelfItem
-                key={item._id}
-                item={item}
-                color={tint.card}
-                onFinished={() => deleteItem(item)}
-                onTrashed={() => deleteItem(item)}
-                onMoveToFridge={
-                  shelf === 'pantry'
-                    ? () => {
-                        // Fridge = Fresh shelf for this session.
-                        move(item._id, 'fresh')
-                        setShelf('fresh')
-                      }
-                    : undefined
-                }
-              />
-            ))
-          )}
-        </View>
+      <View style={styles.list}>
+        {deleteError ? <Text style={[type.small, styles.deleteError]}>{deleteError}</Text> : null}
+        {pantry.status === 'error' && !pantry.data ? (
+          <Notice message={pantry.error.message} onRetry={pantry.reload} />
+        ) : !pantry.data ? (
+          <ActivityIndicator color={colors.muted} style={styles.spinner} />
+        ) : visible.length === 0 ? (
+          <Text style={[type.small, styles.empty]}>Your pantry is empty.</Text>
+        ) : (
+          visible.map((item) => (
+            <FoodCard
+              key={item._id}
+              item={item}
+              onCompleted={() => deleteItem(item)}
+            />
+          ))
+        )}
       </View>
     </ScrollView>
   )
@@ -136,36 +101,35 @@ function ActionTile({ icon, label, footnote, ...pressable }: TileProps) {
   )
 }
 
-type ShelfItemProps = {
-  item: PantryItem
-  color: string
-  onFinished: () => void
-  onTrashed: () => void
-  onMoveToFridge?: () => void
-}
-
-function ShelfItem({ item, color, onFinished, onTrashed, onMoveToFridge }: ShelfItemProps) {
+// Wireframe food frame: name, expiration date, days left to finish it, then Completed.
+function FoodCard({ item, onCompleted }: { item: PantryItem; onCompleted: () => void }) {
   const days = item.expires_at ? daysUntil(item.expires_at) : null
   const urgent = days !== null && days <= EXPIRY_URGENT_DAYS
 
   return (
-    <View style={[styles.item, { backgroundColor: color }]}>
+    <View style={styles.item}>
       <View style={styles.itemBody}>
         <Text style={styles.itemName}>{item.name}</Text>
         <Text style={styles.itemMeta}>
-          {item.quantity} {item.unit}
+          {item.expires_at ? `Expires ${formatDate(item.expires_at)}` : 'No expiration date'}
         </Text>
-        {item.expires_at ? (
-          <Text style={[styles.itemMeta, urgent && styles.urgent]}>{expiryLabel(item.expires_at)}</Text>
-        ) : null}
+        {days !== null ? <Text style={[styles.itemMeta, urgent && styles.urgent]}>{daysLeftLabel(days)}</Text> : null}
       </View>
       <View style={styles.itemActions}>
-        <ItemAction label="Finished" onPress={onFinished} />
-        <ItemAction label="Trashed" onPress={onTrashed} />
-        {onMoveToFridge ? <ItemAction label="Move to fridge" onPress={onMoveToFridge} /> : null}
+        <ItemAction label="Completed" onPress={onCompleted} />
       </View>
     </View>
   )
+}
+
+function expiryTime(item: PantryItem) {
+  return item.expires_at ? new Date(item.expires_at).getTime() : Number.POSITIVE_INFINITY
+}
+
+function daysLeftLabel(days: number) {
+  if (days < 0) return `Expired ${-days} ${-days === 1 ? 'day' : 'days'} ago`
+  if (days === 0) return 'Last day to finish it'
+  return `${days} ${days === 1 ? 'day' : 'days'} left`
 }
 
 function ItemAction({ label, onPress }: { label: string; onPress: () => void }) {
@@ -202,30 +166,11 @@ const styles = StyleSheet.create({
     color: colors.greenInk,
     letterSpacing: 1,
   },
-  tabs: { flexDirection: 'row' },
-  tab: {
-    flex: 1,
-    height: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderTopLeftRadius: radius.md,
-    borderTopRightRadius: radius.md,
-    borderCurve: 'continuous',
-  },
-  tabLabel: { fontSize: 15, fontWeight: '500', color: colors.muted },
-  tabLabelActive: { color: colors.ink, fontWeight: '600' },
-  panel: {
-    minHeight: 360,
-    padding: 12,
-    gap: 10,
-    borderRadius: radius.md,
-    borderCurve: 'continuous',
-  },
-  panelFirst: { borderTopLeftRadius: 0 },
-  panelLast: { borderTopRightRadius: 0 },
+  list: { gap: 10 },
   spinner: { marginTop: 40 },
   empty: { textAlign: 'center', marginTop: 40 },
   item: {
+    backgroundColor: colors.green,
     flexDirection: 'row',
     gap: 12,
     padding: 16,

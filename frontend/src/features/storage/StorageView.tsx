@@ -31,7 +31,7 @@ export function StorageView() {
         {tab === 'groceries' ? <GroceriesView pantry={pantry} /> : <NutritionView pantry={pantry.data ?? []} />}
       </View>
       <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-        <Segmented options={TABS} value={tab} onChange={setTab} />
+        <Segmented variant="text" options={TABS} value={tab} onChange={setTab} />
       </View>
     </View>
   )
@@ -42,7 +42,7 @@ const styles = StyleSheet.create({
   body: { flex: 1 },
   bottomBar: {
     paddingHorizontal: 20,
-    paddingTop: 10,
+    paddingTop: 4,
     backgroundColor: colors.bg,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.line,

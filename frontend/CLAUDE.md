@@ -34,14 +34,15 @@ Expo SDK 57 / React Native 0.86 / React 19 (pinned to 57 to match the App Store 
 - `src/features/`: the two halves of the home screen. `index.tsx` switches between Shopping and Storage with a segmented control at the top, as in the Figma wireframe. This is deliberately not a tab navigator.
 - `src/lib/api.ts`: the only place that talks to the backend, with typed responses. The base URL comes from `EXPO_PUBLIC_API_URL`, or else the deployed `https://paintry.onrender.com` (free tier: first request after idle can take ~30 s, so the timeout is 45 s).
 - `src/lib/useAsync.ts`: a small fetch hook keyed by a string. Change the key to refetch, or call `reload()`. It's written to pass the React Compiler lint (no setState in effect bodies), so keep it that way.
-- `src/theme.ts`: tokens from the Figma file (`76LvwXLZ5AYbJDG67D44FR`). Mint/green for Shopping UI. The three storage shelves are colored folders: Fresh is pink, Pantry is yellow, Leftover is blue.
+- `src/theme.ts`: tokens from the Figma file (`76LvwXLZ5AYbJDG67D44FR`). Mint/green for Shopping UI. The `shelves` colors are still used by Add item's picker and the Nutrition bars.
 
 ### Backend contract (`../backend/app/main.py`)
 
 These endpoints are used: `GET /users/{id}`, `GET /products`, `GET|POST /users/{id}/pantry`, `GET /users/{id}/savings`, `POST /convince-me`, `POST /users/{id}/pantry/receipt`, `DELETE /users/{id}/pantry/{item_id}`, `GET /users/{id}/pantry/food-groups`, `POST /login/supabase`. API docs: `backend_docs/HuskyCartAPI.pdf`.
 
 - **Storage → Nutrition** follows the Figma frame `5:319`: five food-group bars from `/pantry/food-groups` (`pct` = calorie share vs the pyramid `target_pct`, shown as "Goal N%"; colors in `foodGroupBars` in `src/theme.ts`; low groups red, high amber) and `pantry_balance_hint` as the suggestion; savings / use-first / allergy cards sit below.
-- **Finished / Trashed** hide the item at once and call `DELETE /users/{id}/pantry/{item_id}`; on failure `restore` brings it back with an error.
+- **Pantry section** (labelled "Pantry", internal value `storage`): one list of food cards (#A8DCAB) with name, expiration date and days left, soonest first and undated last; the only action is Completed (deletes it). There are no Fresh / Pantry / Leftover shelves or Move to fridge any more (Add item still uses that picker to prefill an expiry).
+- **Completed** hides the item at once and call `DELETE /users/{id}/pantry/{item_id}`; on failure `restore` brings it back with an error.
 - **Cart → Add to pantry** replaced checkout (no checkout screen): Keep / Switch in Convince Me still add to the cart, and the cart button posts every line to the pantry (fresh categories get a default expiry, `defaultExpiry` in `src/lib/pantry.tsx`). The Shopping home has no "All products" list; products appear only as search results.
 - **Pantry adds** (Add item, receipt, cart) call `POST /users/{id}/pantry` with no demo fallback, so failures show. Add item has **Scan barcode**: `/scan?for=pantry` hands the code back (`src/lib/scannedBarcode.ts`), Open Food Facts names it, the user saves.
 
@@ -57,7 +58,5 @@ These endpoints are used: `GET /users/{id}`, `GET /products`, `GET|POST /users/{
 ### Client-only state (no backend endpoint yet)
 
 - **Cart** lives in `CartProvider` (device only) until it is added to the pantry.
-- **Pantry shelf** is derived in `shelfOf()`: unit `leftover` → Leftover, expiring within 14 days → Fresh, else Pantry.
-- **Move to fridge** is a session-only override in `PantryProvider`.
 
 When the backend adds endpoints for any of these, replace the local state rather than layering on top of it.

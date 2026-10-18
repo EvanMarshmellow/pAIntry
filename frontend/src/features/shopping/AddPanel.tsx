@@ -81,6 +81,11 @@ export function AddPanel({ onDone }: { onDone?: () => void }) {
               returnKeyType="search"
               style={styles.searchInput}
             />
+            {query ? (
+              <Pressable onPress={() => setQuery('')} hitSlop={10} accessibilityLabel="Clear search">
+                <Ionicons name="close-circle" size={18} color={colors.faint} />
+              </Pressable>
+            ) : null}
           </View>
 
           <Pressable

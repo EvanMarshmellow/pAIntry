@@ -108,7 +108,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(item),
     }),
-  // Finished / Trashed on a shelf item.
+  // Completed on a pantry item.
   deletePantryItem: (userId: string, itemId: string) =>
     request<{ deleted: boolean; item_id: string }>(`/users/${userId}/pantry/${itemId}`, { method: 'DELETE' }),
   // Pantry mix across five food groups (Storage → Nutrition).

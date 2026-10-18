@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons'
 import { Link } from 'expo-router'
 import { useState } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Segmented } from '@/components/Segmented'
 import { ShoppingView } from '@/features/shopping/ShoppingView'
@@ -10,7 +10,7 @@ import { colors } from '@/theme'
 
 const SECTIONS = [
   { value: 'shopping', label: 'Shopping' },
-  { value: 'storage', label: 'Storage' },
+  { value: 'storage', label: 'Pantry' },
 ] as const
 
 type Section = (typeof SECTIONS)[number]['value']
@@ -22,7 +22,6 @@ export default function Home() {
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
         <View style={styles.topRow}>
-          <Text style={styles.greeting}>Hi,</Text>
           <Link href="/profile" asChild>
             <Pressable hitSlop={8} accessibilityLabel="Profile">
               <Ionicons name="person-circle-outline" size={32} color={colors.ink} />
@@ -39,6 +38,6 @@ export default function Home() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 16, gap: 16 },
-  topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  greeting: { fontSize: 28, fontWeight: '700', letterSpacing: -0.5, color: colors.ink },
+  // Only the profile button now; keep it top-right.
+  topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' },
 })

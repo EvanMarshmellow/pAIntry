@@ -1,0 +1,17 @@
+{
+  "name": "paintry-photon-agent",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@spectrum-ts/express": "latest",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "spectrum-ts": "latest"
+  }
+}

@@ -51,6 +51,7 @@ P = [
     ("Granola Bar Oat & Honey", "TrailMix Co", "snacks", 6, "bar", [190, 4, 29, 7, 2, 11], (3.99, 3.49, 4.29)),
     ("Roasted Almonds", "NutHouse", "snacks", 16, "oz", [170, 6, 6, 15, 3, 1], (7.49, 6.49, 7.99)),
     ("Hummus Classic", "Mezze", "snacks", 10, "oz", [70, 2, 4, 5, 1, 0], (3.99, 3.49, 4.29)),
+    ("Tortilla Chips", "Casa Verde", "snacks", 12, "oz", [140, 2, 18, 7, 1, 0], (3.49, 2.99, 3.79)),
     ("Whey Protein Powder Vanilla", "MaxFuel", "snacks", 32, "oz", [120, 24, 3, 1.5, 0, 1], (29.99, 26.99, 32.99)),
     ("Granola", "Morning Mill", "breakfast", 12, "oz", [200, 5, 32, 7, 3, 12], (4.49, 3.99, 4.79)),
     ("Frosted Corn Cereal", "Crunchy", "breakfast", 14, "oz", [140, 1, 33, 0, 1, 12], (4.29, 3.79, 4.59)),
@@ -58,8 +59,12 @@ P = [
     ("Unsweetened Almond Milk", "NutHouse", "beverages", 64, "fl oz", [30, 1, 1, 2.5, 0, 0], (3.49, 2.99, 3.79)),
 ]
 
-# Fixed id so Maya keeps the same id on every reseed
+# Fixed ids so demo users keep the same id on every reseed
 MAYA_ID = ObjectId("665f00000000000000000001")
+ALEX_ID = ObjectId("665f00000000000000000002")
+HOUSEHOLD_ID = ObjectId("665f00000000000000000010")
+MAYA_PHONE = "+15555550101"
+ALEX_PHONE = "+15555550102"
 
 
 def products():
@@ -83,10 +88,14 @@ async def main():
     res = await db.products.insert_many(products())
     print(f"Inserted {len(res.inserted_ids)} products")
 
-    user = {"_id": MAYA_ID, "name": "Maya", "persona": "grad student", "weekly_budget": 60,
-            "goals": {"protein_g_per_day": 120}, "allergies": ["peanuts"],
+    maya = {"_id": MAYA_ID, "name": "Maya", "persona": "grad student", "weekly_budget": 60,
+            "phone": MAYA_PHONE, "goals": {"protein_g_per_day": 120}, "allergies": ["peanuts"],
             "dietary": [], "sample_data": True}
-    uid = str((await db.users.insert_one(user)).inserted_id)
+    alex = {"_id": ALEX_ID, "name": "Alex", "persona": "roommate", "weekly_budget": 50,
+            "phone": ALEX_PHONE, "goals": {}, "allergies": [],
+            "dietary": [], "sample_data": True}
+    await db.users.insert_many([maya, alex])
+    uid, aid = str(MAYA_ID), str(ALEX_ID)
 
     now = datetime.now(timezone.utc)
     pantry = [("Baby Spinach", 1, "bag", 1), ("Plain Greek Yogurt Nonfat", 1, "tub", 2),
@@ -98,8 +107,14 @@ async def main():
         {"user_id": uid, "name": n, "quantity": q, "unit": u,
          "expires_at": now + timedelta(days=d), "added_at": now, "sample_data": True}
         for n, q, u, d in pantry])
-    print(f"Inserted demo user Maya (id={uid}) with {len(pantry)} pantry items")
-    print("savings_ledger is empty")
+    await db.households.insert_one({
+        "_id": HOUSEHOLD_ID, "name": "Maya and Alex", "members": [uid, aid],
+        "space_id": None, "sample_data": True,
+    })
+    print(f"Inserted demo user Maya (id={uid}, phone={MAYA_PHONE}) with {len(pantry)} pantry items")
+    print(f"Inserted roommate Alex (id={aid}, phone={ALEX_PHONE}) with empty pantry")
+    print(f"Inserted household {HOUSEHOLD_ID} (space_id unset until first group message)")
+    print("group_carts and savings_ledger are empty")
     await close()
 
 

@@ -90,16 +90,15 @@ cartwise/
 - Node 20+, Python 3.11+
 - Expo Go on your phone
 - A MongoDB Atlas cluster
-- API keys: xAI, Perceptron, Photon
+- API keys: Gemini, Perceptron, Photon
 
 ### Environment
 Create `backend/.env`:
 
 ```bash
 MONGODB_URI=mongodb+srv://...
-XAI_API_KEY=
-GROK_MODEL=            # check the xAI console for the current model id
-GROK_VOICE_MODEL=grok-voice-latest
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.8-flash
 PERCEPTRON_API_KEY=
 DEMO_MODE=false        # true = serve cached AI responses from fixtures/
 ```

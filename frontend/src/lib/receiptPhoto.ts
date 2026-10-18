@@ -1,12 +1,15 @@
-// Hand off a captured receipt URI from the camera screen back to Upload receipt.
-let pendingUri: string | null = null
+// Hand off a captured receipt from the camera screen back to Upload receipt.
+// base64 rides along so the OCR call doesn't need a file-system read.
+export type ReceiptPhoto = { uri: string; base64: string | null; mimeType: string }
 
-export function stashReceiptPhoto(uri: string) {
-  pendingUri = uri
+let pending: ReceiptPhoto | null = null
+
+export function stashReceiptPhoto(photo: ReceiptPhoto) {
+  pending = photo
 }
 
 export function consumeReceiptPhoto() {
-  const uri = pendingUri
-  pendingUri = null
-  return uri
+  const photo = pending
+  pending = null
+  return photo
 }

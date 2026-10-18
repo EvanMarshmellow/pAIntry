@@ -1,28 +1,36 @@
-import Constants from 'expo-constants'
 import { DEMO_PANTRY, DEMO_PRODUCTS, demoAddPantry, demoConvince } from './demoData'
-import type { ConvinceInput, NewPantryItem, PantryItem, Product, User, Verdict } from './types'
+import { lookupBarcode, searchQuery } from './openFoodFacts'
+import type {
+  ConvinceInput,
+  NewPantryItem,
+  PantryItem,
+  Product,
+  ReceiptOcr,
+  ReceiptPushResult,
+  User,
+  Verdict,
+} from './types'
 
 export type {
   ConvinceInput,
   NewPantryItem,
   PantryItem,
   Product,
+  ReceiptLine,
+  ReceiptOcr,
+  ReceiptPushResult,
   User,
   Verdict,
 } from './types'
 
-// EXPO_PUBLIC_API_URL wins. Otherwise reuse the Metro host so a phone on the
-// same Wi-Fi reaches the backend on the dev machine.
-function resolveBaseUrl() {
-  const fromEnv = process.env.EXPO_PUBLIC_API_URL
-  if (fromEnv) return fromEnv.replace(/\/$/, '')
-  const host = Constants.expoConfig?.hostUri?.split(':')[0]
-  return `http://${host ?? 'localhost'}:8000`
-}
+// Deployed backend on Render. Set EXPO_PUBLIC_API_URL (e.g. http://<lan-ip>:8000)
+// to point at a local server instead.
+const DEFAULT_API_URL = 'https://paintry.onrender.com'
 
-export const API_URL = resolveBaseUrl()
+export const API_URL = (process.env.EXPO_PUBLIC_API_URL || DEFAULT_API_URL).replace(/\/$/, '')
 
-export const DEMO_USER_ID = '665f00000000000000000001'
+// Render's free instance sleeps when idle and the first request can take ~30 s.
+const REQUEST_TIMEOUT_MS = 45_000
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -32,7 +40,7 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 2500)
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   let res: Response
   try {
     res = await fetch(`${API_URL}${path}`, {
@@ -63,18 +71,18 @@ async function withDemoFallback<T>(live: () => Promise<T>, demo: () => T): Promi
 }
 
 export const api = {
-  user: (id: string) =>
-    withDemoFallback(
-      () => request<User>(`/users/${id}`),
-      () => ({
-        _id: DEMO_USER_ID,
-        name: 'Maya',
-        persona: 'grad student',
-        weekly_budget: 60,
-        goals: { protein_g_per_day: 120 },
-        allergies: ['peanuts'],
-      }),
-    ),
+  // No demo fallback: a signed-in user must be the real account.
+  user: (id: string) => request<User>(`/users/${id}`),
+  // Not live yet: the backend has no allergies endpoint. Adjust the path/body to
+  // match it, then set SYNC_TO_SERVER in allergies.ts.
+  updateAllergies: (userId: string, allergies: string[]) =>
+    request<unknown>(`/users/${userId}`, { method: 'PATCH', body: JSON.stringify({ allergies }) }),
+  // Exchanges a Supabase session token for the MongoDB user (created on first sign-in).
+  loginSupabase: (accessToken: string) =>
+    request<{ user_id: string; name: string; email: string; new_user: boolean }>('/login/supabase', {
+      method: 'POST',
+      body: JSON.stringify({ access_token: accessToken }),
+    }),
   products: () => withDemoFallback(() => request<Product[]>('/products'), () => DEMO_PRODUCTS),
   pantry: (userId: string) =>
     withDemoFallback(() => request<PantryItem[]>(`/users/${userId}/pantry`), () => DEMO_PANTRY),
@@ -92,12 +100,33 @@ export const api = {
       () => request<{ total_saved: number; entries: number }>(`/users/${_userId}/savings`),
       () => ({ total_saved: 0, entries: 0 }),
     ),
+  // OCR runs on the device (Perceptron); the server matches lines to the catalog
+  // and opens a receipt session. Items are confirmed with addPantryItem.
+  pushReceipt: (userId: string, ocr: ReceiptOcr, spaceId = `app:${userId}`) =>
+    request<ReceiptPushResult>(`/users/${userId}/pantry/receipt`, {
+      method: 'POST',
+      body: JSON.stringify({ ocr, space_id: spaceId }),
+    }),
   convinceMe: async (userId: string, input: ConvinceInput) => {
-    try {
-      return await request<Verdict>('/convince-me', {
+    const post = (body: ConvinceInput) =>
+      request<Verdict>('/convince-me', {
         method: 'POST',
-        body: JSON.stringify({ user_id: userId, ...input, log: false }),
+        body: JSON.stringify({ user_id: userId, ...body, log: false }),
       })
+    try {
+      if ('barcode' in input) {
+        // Real UPCs aren't in the seeded catalog: name the product with Open Food
+        // Facts, then let the backend price it by name (live QFC prices).
+        const scanned = await lookupBarcode(input.barcode)
+        if (scanned) {
+          try {
+            return await post({ query: searchQuery(scanned) })
+          } catch (e) {
+            if (!(e instanceof ApiError && e.status === 404)) throw e
+          }
+        }
+      }
+      return await post(input)
     } catch (e) {
       // Seeded DB almost never has real UPCs; fall back to the offline catalog.
       if (

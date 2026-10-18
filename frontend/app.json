@@ -20,7 +20,8 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "output": "server"
     },
     "plugins": [
       "expo-router",
@@ -36,7 +37,9 @@
           "photosPermission": "Allow pAIntry to upload receipt photos from your library.",
           "cameraPermission": "Allow pAIntry to photograph receipts."
         }
-      ]
+      ],
+      "expo-font",
+      "expo-status-bar"
     ],
     "experiments": {
       "typedRoutes": true

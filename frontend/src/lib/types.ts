@@ -32,6 +32,7 @@ export type NewPantryItem = {
   name: string
   quantity: number
   unit: string
+  product_id?: string
   expires_at?: string
 }
 
@@ -66,3 +67,26 @@ export type ConvinceInput =
   | { product_id: string }
   | { barcode: string }
   | { query: string }
+
+// Perceptron OCR output (same shape as backend/app/perceptron_ocr.py).
+export type ReceiptOcr = {
+  store: string | null
+  date: string | null
+  items: { product: string | null; price: string | null; quantity?: string | null }[]
+}
+
+// One OCR line after the backend matched it against the catalog.
+export type ReceiptLine = {
+  ocr_name: string
+  price: string | null
+  quantity: string | null
+  product_id: string | null
+  catalog_name: string | null
+}
+
+export type ReceiptPushResult = {
+  reply: string
+  source: 'gemini' | 'engine'
+  lines: ReceiptLine[]
+  receipt_state: string | null
+}

@@ -232,9 +232,28 @@ def remove_from_personal_list(cart, product_id):
     return out, {"action": "removed", "name": removed_name, "product_id": pid}
 
 
-# --- Pantry food-group mix (MyPlate-style, serving-based) ---
+# --- Pantry food-group mix (classic pyramid, calorie-based %) ---
 
-FOOD_GROUPS = ("vegetables", "fruits", "grains", "proteins_dairy", "sweets_fats")
+FOOD_GROUPS = ("grains", "vegetables", "fruits", "proteins_dairy", "sweets_fats")
+
+# Classic food pyramid targets (sum to 100%).
+PYRAMID_TARGET_PCT = {
+    "grains": 30,
+    "vegetables": 25,
+    "fruits": 20,
+    "proteins_dairy": 15,
+    "sweets_fats": 10,
+}
+
+PYRAMID_LABELS = {
+    "grains": "Grains",
+    "vegetables": "Vegetables",
+    "fruits": "Fruit",
+    "proteins_dairy": "Protein & Dairy",
+    "sweets_fats": "Fat & Sweet",
+}
+
+PYRAMID_STATUS_BAND = 5  # percentage points above/below target → high/low
 
 SERVING_G = {
     "vegetables": 85,
@@ -422,30 +441,27 @@ def _pct(part, whole):
     return round(part / whole * 100, 1) if whole else 0.0
 
 
-def _group_status(group, pct_servings, produce_combined_pct):
-    if group in ("vegetables", "fruits"):
-        if produce_combined_pct < 25:
-            return "low"
-        if produce_combined_pct > 45:
-            return "high"
-        return "ok"
-    if group == "grains":
-        if pct_servings < 15:
-            return "low"
-        if pct_servings > 30:
-            return "high"
-        return "ok"
-    if group == "proteins_dairy":
-        if pct_servings < 20:
-            return "low"
-        if pct_servings > 35:
-            return "high"
-        return "ok"
-    if group == "sweets_fats":
-        if pct_servings > 15:
-            return "high"
-        return "ok"
+def _group_status_pyramid(group, pct_calories):
+    target = PYRAMID_TARGET_PCT.get(group, 0)
+    band = PYRAMID_STATUS_BAND
+    if pct_calories < target - band:
+        return "low"
+    if pct_calories > target + band:
+        return "high"
     return "ok"
+
+
+def _pyramid_hints(groups_out):
+    hints = []
+    for g in FOOD_GROUPS:
+        row = groups_out[g]
+        delta = round(row["pct_calories"] - row["target_pct"], 1)
+        label = PYRAMID_LABELS[g]
+        if row["status"] == "low":
+            hints.append(f"{label} is {abs(delta):.0f} pts below the {row['target_pct']}% pyramid target.")
+        elif row["status"] == "high":
+            hints.append(f"{label} is {delta:.0f} pts above the {row['target_pct']}% pyramid target.")
+    return hints[:4]
 
 
 def analyze_pantry_food_groups(pantry, products, user_id=None):
@@ -499,42 +515,44 @@ def analyze_pantry_food_groups(pantry, products, user_id=None):
     groups_out = {}
     for g in FOOD_GROUPS:
         pct_s = _pct(totals_serv[g], sum_serv)
+        pct_c = _pct(totals_cal[g], sum_cal)
+        target = PYRAMID_TARGET_PCT[g]
         groups_out[g] = {
+            "label": PYRAMID_LABELS[g],
+            "target_pct": target,
+            "pct": pct_c,
+            "pct_calories": pct_c,
             "pct_servings": pct_s,
             "pct_grams": _pct(totals_g[g], sum_g),
-            "pct_calories": _pct(totals_cal[g], sum_cal),
+            "delta_from_target": round(pct_c - target, 1),
+            "calories_on_hand": round(totals_cal[g], 0),
             "grams_on_hand": round(totals_g[g], 1),
             "serving_equiv": round(totals_serv[g], 2),
             "status": "ok",
         }
 
-    produce_combined = groups_out["vegetables"]["pct_servings"] + groups_out["fruits"]["pct_servings"]
     for g in FOOD_GROUPS:
-        groups_out[g]["status"] = _group_status(g, groups_out[g]["pct_servings"], produce_combined)
+        groups_out[g]["status"] = _group_status_pyramid(g, groups_out[g]["pct_calories"])
 
-    hints = []
-    if produce_combined < 25:
-        hints.append("Produce (vegetables + fruits) is below 25% of serving equivalents — stock more fresh items.")
-    elif produce_combined > 45:
-        hints.append("Produce is above 45% of serving equivalents — balance with grains and protein/dairy.")
-    if groups_out["sweets_fats"]["pct_servings"] > 15:
-        hints.append("Sweets/fats exceed 15% — consider shifting toward whole grains and lean protein.")
-    if groups_out["proteins_dairy"]["pct_servings"] < 20:
-        hints.append("Protein/dairy is under 20% — add beans, dairy, eggs, or lean meat.")
-    if groups_out["grains"]["pct_servings"] < 15:
-        hints.append("Grains are under 15% — rice, oats, or bread would round out the pantry.")
+    produce_target = PYRAMID_TARGET_PCT["vegetables"] + PYRAMID_TARGET_PCT["fruits"]
+    produce_actual = groups_out["vegetables"]["pct_calories"] + groups_out["fruits"]["pct_calories"]
 
     return {
         "user_id": user_id,
-        "primary_metric": "servings",
+        "primary_metric": "calories",
+        "pyramid_model": "classic",
+        "pyramid_targets": dict(PYRAMID_TARGET_PCT),
         "groups": groups_out,
-        "combined_produce_pct_servings": round(produce_combined, 1),
-        "pantry_balance_hint": hints,
+        "combined_produce_pct": round(produce_actual, 1),
+        "combined_produce_target_pct": produce_target,
+        "pantry_balance_hint": _pyramid_hints(groups_out),
         "lines": lines,
         "unclassified_grams": round(unclassified_grams, 1),
         "assumptions": [
-            "Percentages use USDA-style serving gram weights per group.",
-            "Pantry mass is estimated from catalog package size and pantry quantity/units.",
+            "Primary percentages are share of estimated pantry calories by food group.",
+            "Calories scale from catalog nutrition_per_serving and estimated amount on hand.",
+            "Targets follow the classic pyramid: grains 30%, vegetables 25%, fruit 20%, "
+            "protein & dairy 15%, fat & sweet 10%.",
             "Pantry mix reflects what you have on hand, not daily intake.",
         ],
     }

@@ -139,12 +139,14 @@ def test_pantry_edible_grams_milk_half_jug():
 
 def test_pantry_food_groups_maya_mix():
     r = analyze_pantry_food_groups(MAYA_PANTRY, MAYA_PRODUCTS, user_id="665f00000000000000000001")
-    assert r["primary_metric"] == "servings"
-    pcts = [r["groups"][g]["pct_servings"] for g in r["groups"]]
-    assert 99 <= sum(pcts) <= 101
-    gram_pcts = [r["groups"][g]["pct_grams"] for g in r["groups"]]
-    assert 99 <= sum(gram_pcts) <= 101
-    assert r["groups"]["proteins_dairy"]["grams_on_hand"] > r["groups"]["vegetables"]["grams_on_hand"]
+    assert r["primary_metric"] == "calories"
+    assert r["pyramid_model"] == "classic"
+    assert r["pyramid_targets"]["grains"] == 30
+    assert r["pyramid_targets"]["fruits"] == 20
+    cal_pcts = [r["groups"][g]["pct_calories"] for g in r["groups"]]
+    assert 99 <= sum(cal_pcts) <= 101
+    assert r["groups"]["grains"]["target_pct"] == 30
+    assert r["groups"]["grains"]["label"] == "Grains"
     assert all(line["group"] for line in r["lines"])
 
 

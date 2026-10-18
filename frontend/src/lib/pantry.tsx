@@ -1,8 +1,5 @@
 import { createContext, use, useMemo, useState, type ReactNode } from 'react'
 
-// Unit saved for items added as leftovers in Add item.
-export const LEFTOVER_UNIT = 'leftover'
-
 // Rough shelf life by catalog category, so items moved from the cart into the
 // pantry get a days-left countdown when they spoil fast. Others get no expiry.
 const SHELF_LIFE_DAYS: Record<string, number> = { produce: 5, meat_seafood: 3, dairy_eggs: 10, bakery: 5 }

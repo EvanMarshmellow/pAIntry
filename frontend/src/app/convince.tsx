@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Button, ButtonIcon, ButtonText } from '@/components/Button'
 import { Notice } from '@/components/Notice'
 import { ProductThumb } from '@/components/ProductThumb'
-import { api, type ConvinceInput, type Verdict } from '@/lib/api'
+import { api, ScanNotFoundError, type ConvinceInput, type Verdict } from '@/lib/api'
 import { useCart } from '@/lib/cart'
 import { formatPrice } from '@/lib/format'
 import { useUser } from '@/lib/session'
@@ -65,7 +65,11 @@ export default function ConvinceMe() {
         </View>
       ) : result.status === 'error' ? (
         <View style={styles.padded}>
-          <Notice message={result.error.message} onRetry={result.reload} />
+          <Notice
+            message={result.error.message}
+            // An unknown barcode needs a new scan, not the same lookup again.
+            onRetry={result.error instanceof ScanNotFoundError ? () => router.replace('/scan') : result.reload}
+          />
         </View>
       ) : (
         <VerdictCard verdict={result.data} bottomInset={insets.bottom} />

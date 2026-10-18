@@ -43,14 +43,10 @@ function normalizeBarcode(code: string) {
   return code.replace(/\D/g, '').replace(/^0+/, '') || '0'
 }
 
-function productForBarcode(code: string): Product {
+// Only exact sample-catalog barcodes; unknown codes must not map onto a random product.
+function productForBarcode(code: string): Product | undefined {
   const needle = normalizeBarcode(code)
-  const exact = DEMO_PRODUCTS.find((p) => normalizeBarcode(p.barcode) === needle)
-  if (exact) return exact
-  // Offline demo: unknown real-world barcodes map stably onto the sample catalog.
-  let hash = 0
-  for (let i = 0; i < code.length; i++) hash = (hash * 31 + code.charCodeAt(i)) >>> 0
-  return DEMO_PRODUCTS[hash % DEMO_PRODUCTS.length]!
+  return DEMO_PRODUCTS.find((p) => normalizeBarcode(p.barcode) === needle)
 }
 
 function productForQuery(query: string): Product | undefined {

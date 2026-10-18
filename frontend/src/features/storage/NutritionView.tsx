@@ -18,7 +18,6 @@ export function NutritionView({ pantry }: { pantry: PantryItem[] }) {
   const user = useUser()
   const cart = useCart()
   const { removed, version } = usePantryOverrides()
-  const savings = useAsync(() => api.savings(user._id), user._id)
   // Refetch after pantry adds, like the pantry list itself.
   const mix = useAsync(() => api.foodGroups(user._id), `${user._id}|${version}`)
 
@@ -58,19 +57,6 @@ export function NutritionView({ pantry }: { pantry: PantryItem[] }) {
           caption={`${Math.round(cart.proteinG)} g of your ${weeklyProteinGoal} g weekly goal`}
         />
       ) : null}
-
-      <Card icon="sparkles-outline" title="Saved with pAIntry">
-        <Text style={styles.bigNumber}>
-          {savings.data ? formatPrice(savings.data.total_saved) : '—'}
-        </Text>
-        <Text style={type.small}>
-          {savings.status === 'error'
-            ? savings.error.message
-            : savings.data
-              ? `From ${savings.data.entries} ${savings.data.entries === 1 ? 'swap' : 'swaps'}`
-              : 'Loading…'}
-        </Text>
-      </Card>
 
       <Card icon="time-outline" title="Use these first">
         {useSoon.length === 0 ? (
@@ -206,7 +192,6 @@ const styles = StyleSheet.create({
   track: { height: 10, borderRadius: 5, backgroundColor: colors.bg, overflow: 'hidden' },
   fill: { height: '100%', borderRadius: 5, backgroundColor: colors.green },
   fillOver: { backgroundColor: '#F7CAC1' },
-  bigNumber: { fontSize: 28, fontWeight: '700', color: colors.greenInk, letterSpacing: -0.5 },
   line: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   urgent: { color: colors.danger, fontWeight: '700' },
   over: { color: verdictColors.Swap.ink, fontWeight: '700' },

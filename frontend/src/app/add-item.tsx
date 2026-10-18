@@ -4,21 +4,15 @@ import { useCallback, useState } from 'react'
 import { StyleSheet, Text, TextInput, View } from 'react-native'
 import { Button, ButtonIcon, ButtonText } from '@/components/Button'
 import { SheetHeader } from '@/components/SheetHeader'
-import { Segmented } from '@/components/Segmented'
 import { api } from '@/lib/api'
 import { lookupBarcode, searchQuery } from '@/lib/openFoodFacts'
-import { LEFTOVER_UNIT, usePantryOverrides } from '@/lib/pantry'
+import { usePantryOverrides } from '@/lib/pantry'
 import { consumeScannedBarcode } from '@/lib/scannedBarcode'
 import { useUser } from '@/lib/session'
-import { colors, radius, shelves, type, type ShelfId } from '@/theme'
+import { colors, radius, type } from '@/theme'
 
-const SHELF_OPTIONS = (['fresh', 'pantry', 'leftover'] as const).map((id) => ({
-  value: id,
-  label: shelves[id].label,
-}))
-
-// Typical shelf life used to prefill the expiration date.
-const DEFAULT_DAYS: Record<ShelfId, number> = { fresh: 5, pantry: 180, leftover: 3 }
+// The expiration date starts a week out; the user edits it if needed.
+const DEFAULT_DAYS = 7
 
 function addDays(days: number) {
   const d = new Date()
@@ -44,12 +38,10 @@ function parseInputDate(value: string) {
 export default function AddItem() {
   const user = useUser()
   const { refresh } = usePantryOverrides()
-  const [shelf, setShelf] = useState<ShelfId>('fresh')
   const [name, setName] = useState('')
   const [quantity, setQuantity] = useState('1')
   const [unit, setUnit] = useState('item')
-  // null means "use the shelf's default", so switching shelves updates it until the user edits.
-  const [expiresOn, setExpiresOn] = useState<string | null>(null)
+  const [expiresOn, setExpiresOn] = useState(() => toInputDate(addDays(DEFAULT_DAYS)))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [lookingUp, setLookingUp] = useState(false)
@@ -68,7 +60,6 @@ export default function AddItem() {
           if (product) {
             setName(searchQuery(product))
             setScanNote(product.quantity ? `Found ${product.quantity}` : 'Found it')
-            setShelf('pantry')
           } else {
             setScanNote(`Barcode ${code} isn’t in Open Food Facts. Type the name instead.`)
           }
@@ -77,8 +68,7 @@ export default function AddItem() {
     }, []),
   )
 
-  const effectiveDate = expiresOn ?? toInputDate(addDays(DEFAULT_DAYS[shelf]))
-  const parsed = parseInputDate(effectiveDate)
+  const parsed = parseInputDate(expiresOn)
   const qty = Number(quantity)
   const valid = name.trim().length > 0 && qty > 0 && parsed != null
 
@@ -90,7 +80,7 @@ export default function AddItem() {
       await api.addPantryItem(user._id, {
         name: name.trim(),
         quantity: qty,
-        unit: shelf === 'leftover' ? LEFTOVER_UNIT : unit.trim() || 'item',
+        unit: unit.trim() || 'item',
         expires_at: parsed.toISOString(),
       })
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
@@ -105,7 +95,6 @@ export default function AddItem() {
   return (
     <View style={styles.sheet}>
       <SheetHeader />
-      <Segmented options={SHELF_OPTIONS} value={shelf} onChange={setShelf} />
 
       <Button
         variant="secondary"
@@ -121,7 +110,7 @@ export default function AddItem() {
       <TextInput
         value={name}
         onChangeText={setName}
-        placeholder={shelf === 'leftover' ? 'e.g. Chicken fried rice' : 'e.g. Baby spinach'}
+        placeholder="e.g. Baby spinach"
         placeholderTextColor={colors.faint}
         style={styles.input}
         autoFocus
@@ -130,14 +119,12 @@ export default function AddItem() {
         <Field label="Quantity">
           <TextInput value={quantity} onChangeText={setQuantity} keyboardType="decimal-pad" style={styles.input} />
         </Field>
-        {shelf === 'leftover' ? null : (
-          <Field label="Unit">
-            <TextInput value={unit} onChangeText={setUnit} autoCapitalize="none" style={styles.input} />
-          </Field>
-        )}
+        <Field label="Unit">
+          <TextInput value={unit} onChangeText={setUnit} autoCapitalize="none" style={styles.input} />
+        </Field>
         <Field label="Expiration date">
           <TextInput
-            value={effectiveDate}
+            value={expiresOn}
             onChangeText={setExpiresOn}
             placeholder="YYYY-MM-DD"
             placeholderTextColor={colors.faint}

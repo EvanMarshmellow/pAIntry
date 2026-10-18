@@ -34,20 +34,20 @@ Expo SDK 57 / React Native 0.86 / React 19 (pinned to 57 to match the App Store 
 - `src/features/`: the two halves of the home screen. `index.tsx` switches between Shopping and Storage with a segmented control at the top, as in the Figma wireframe. This is deliberately not a tab navigator.
 - `src/lib/api.ts`: the only place that talks to the backend, with typed responses. The base URL comes from `EXPO_PUBLIC_API_URL`, or else the deployed `https://paintry.onrender.com` (free tier: first request after idle can take ~30 s, so the timeout is 45 s).
 - `src/lib/useAsync.ts`: a small fetch hook keyed by a string. Change the key to refetch, or call `reload()`. It's written to pass the React Compiler lint (no setState in effect bodies), so keep it that way.
-- `src/theme.ts`: tokens from the Figma file (`76LvwXLZ5AYbJDG67D44FR`). Mint/green for Shopping UI. The `shelves` colors are still used by Add item's picker and the Nutrition bars.
+- `src/theme.ts`: tokens from the Figma file (`76LvwXLZ5AYbJDG67D44FR`). Mint/green for Shopping UI. The `shelves` colors are only used by the Nutrition bars now.
 
 ### Backend contract (`../backend/app/main.py`)
 
 These endpoints are used: `GET /users/{id}`, `GET /products`, `GET|POST /users/{id}/pantry`, `GET /users/{id}/savings`, `POST /convince-me`, `POST /users/{id}/pantry/receipt`, `DELETE /users/{id}/pantry/{item_id}`, `GET /users/{id}/pantry/food-groups`, `POST /login/supabase`. API docs: `backend_docs/HuskyCartAPI.pdf`.
 
-- **Storage → Nutrition** follows the Figma frame `5:319`: five food-group bars from `/pantry/food-groups` (`pct` = calorie share vs the pyramid `target_pct`, shown as "Goal N%"; colors in `foodGroupBars` in `src/theme.ts`; low groups red, high amber) and `pantry_balance_hint` as the suggestion; savings / use-first / allergy cards sit below.
-- **Pantry section** (labelled "Pantry", internal value `storage`): one list of food cards (#A8DCAB) with name, expiration date and days left, soonest first and undated last; the only action is Completed (deletes it). There are no Fresh / Pantry / Leftover shelves or Move to fridge any more (Add item still uses that picker to prefill an expiry).
+- **Storage → Nutrition** follows the Figma frame `5:319`: five food-group bars from `/pantry/food-groups` (`pct` = calorie share vs the pyramid `target_pct`, shown as "Goal N%"; colors in `foodGroupBars` in `src/theme.ts`; low groups red, high amber) and `pantry_balance_hint` as the suggestion; budget / protein / use-first / allergy cards sit below (no savings card).
+- **Pantry section** (labelled "Pantry", internal value `storage`): one list of food cards (#A8DCAB) with name, expiration date and days left, soonest first and undated last; the only action is Completed (deletes it). There are no Fresh / Pantry / Leftover shelves or Move to fridge any more; Add item has no shelf picker either (expiry prefilled one week out).
 - **Completed** hides the item at once and call `DELETE /users/{id}/pantry/{item_id}`; on failure `restore` brings it back with an error.
 - **Cart → Add to pantry** replaced checkout (no checkout screen): Keep / Switch in Convince Me still add to the cart, and the cart button posts every line to the pantry (fresh categories get a default expiry, `defaultExpiry` in `src/lib/pantry.tsx`). The Shopping home has no "All products" list; products appear only as search results.
 - **Pantry adds** (Add item, receipt, cart) call `POST /users/{id}/pantry` with no demo fallback, so failures show. Add item has **Scan barcode**: `/scan?for=pantry` hands the code back (`src/lib/scannedBarcode.ts`), Open Food Facts names it, the user saves.
 
 - **Receipt OCR** runs on the device: `src/lib/perceptron.ts` calls Perceptron Mk1.5 (`EXPO_PUBLIC_PERCEPTRON_API_KEY`) with the same JSON schema as `backend/app/perceptron_ocr.py`, then pushes the result to `/users/{id}/pantry/receipt` for catalog matching. Confirmed lines are saved with `POST /users/{id}/pantry`.
-- **Barcode scans** are named by Open Food Facts (`src/lib/openFoodFacts.ts`) and sent to `/convince-me` as a `query`, because the seeded catalog has fake barcodes. Unknown barcodes fall back to `barcode`, then to demo data.
+- **Barcode scans** are named by Open Food Facts (`src/lib/openFoodFacts.ts`) and sent to `/convince-me` as a `query`, because the seeded catalog has fake barcodes. If Open Food Facts doesn't know a barcode it is sent as `barcode`; a 404 throws `ScanNotFoundError` ("Try scanning again", retry reopens the scanner). Scans never fall back to demo data.
 
 - Trust principle: **code does the math, the LLM writes the words**. Prices, savings and verdicts come from the backend's `engine`. The client only sums cart totals. When adding to the cart, use `verdict.engine.product` / `.alternative`, not model text.
 - `/convince-me` may return `source: "engine"` (no AI key, or a timeout). The UI must look complete in that case.

@@ -37,6 +37,12 @@ export const API_URL = (process.env.EXPO_PUBLIC_API_URL || DEFAULT_API_URL).repl
 // Render's free instance sleeps when idle and the first request can take ~30 s.
 const REQUEST_TIMEOUT_MS = 45_000
 
+export class ScanNotFoundError extends Error {
+  constructor() {
+    super('We couldn’t find this product. Try scanning again.')
+  }
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message)
@@ -115,11 +121,6 @@ export const api = {
     request<{ deleted: boolean; item_id: string }>(`/users/${userId}/pantry/${itemId}`, { method: 'DELETE' }),
   // Pantry mix across five food groups (Storage → Nutrition).
   foodGroups: (userId: string) => request<FoodGroups>(`/users/${userId}/pantry/food-groups`),
-  savings: (_userId: string) =>
-    withDemoFallback(
-      () => request<{ total_saved: number; entries: number }>(`/users/${_userId}/savings`),
-      () => ({ total_saved: 0, entries: 0 }),
-    ),
   // OCR runs on the device (Perceptron); the server matches lines to the catalog
   // and opens a receipt session. Items are confirmed with addPantryItem.
   pushReceipt: (userId: string, ocr: ReceiptOcr, spaceId = `app:${userId}`) =>
@@ -160,19 +161,19 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ user_id: userId, ...body, log: false }),
       })
-    try {
-      if ('barcode' in input) {
-        // Real UPCs aren't in the seeded catalog: name the product with Open Food
-        // Facts, then let the backend price it by name (live QFC prices).
-        const scanned = await lookupBarcode(input.barcode)
-        if (scanned) {
-          try {
-            return await post({ query: searchQuery(scanned) })
-          } catch (e) {
-            if (!(e instanceof ApiError && e.status === 404)) throw e
-          }
-        }
+    if ('barcode' in input) {
+      // Real UPCs aren't in the seeded catalog: name the product with Open Food
+      // Facts, then let the backend price it by name (live QFC prices). A scan
+      // never falls back to demo data — an unknown barcode asks to try again.
+      const scanned = await lookupBarcode(input.barcode)
+      try {
+        return await post(scanned ? { query: searchQuery(scanned) } : input)
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) throw new ScanNotFoundError()
+        throw e
       }
+    }
+    try {
       return await post(input)
     } catch (e) {
       // Seeded DB almost never has real UPCs; fall back to the offline catalog.

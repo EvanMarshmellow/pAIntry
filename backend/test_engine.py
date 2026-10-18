@@ -225,6 +225,19 @@ def test_pantry_food_groups_maya_mix():
     assert all(line["group"] for line in r["lines"])
 
 
+def test_pantry_food_groups_kroger_string_size():
+    # Kroger-imported catalog rows store size as "16 fl oz" with no unit.
+    dressing = {"_id": "ranch", "name": "Hidden Valley Original Ranch Salad Dressing",
+                "category": "pantry", "size": "16 fl oz",
+                "nutrition_per_serving": {"calories": 140, "fat_g": 14}}
+    assert pantry_edible_grams({"name": "HIDDEN VALLEY", "quantity": 1, "unit": "item"}, dressing) > 0
+    r = analyze_pantry_food_groups(
+        [{"name": "Hidden Valley Original Ranch Salad Dressing", "quantity": 1, "unit": "item"}],
+        [dressing],
+    )
+    assert r["lines"][0]["matched_product"] is True
+
+
 def test_pantry_unmatched_name_only():
     r = analyze_pantry_food_groups(
         [{"name": "mystery kale bunch", "quantity": 2, "unit": "bag"}],

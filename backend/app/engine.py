@@ -828,12 +828,28 @@ def _count_item_grams(name):
     return 100.0
 
 
+def product_size(product):
+    """(size, unit) for a catalog product. Seeded rows store a number plus `unit`;
+    Kroger-imported rows store one string like "16 fl oz" and no unit."""
+    raw = product.get("size")
+    unit = (product.get("unit") or "").lower()
+    if isinstance(raw, (int, float)):
+        return float(raw or 1), unit or "item"
+    m = re.match(r"\s*([\d.]+)\s*(.*)$", str(raw or ""))
+    if not m:
+        return 1.0, unit or "item"
+    try:
+        size = float(m.group(1))
+    except ValueError:
+        size = 1.0
+    return size or 1.0, unit or (m.group(2).strip().lower() or "item")
+
+
 def package_grams(product):
     """Estimated edible mass for one retail unit of a catalog product."""
     if not product:
         return 0.0
-    size = float(product.get("size") or 1)
-    unit = (product.get("unit") or "item").lower()
+    size, unit = product_size(product)
     name = product.get("name") or ""
     if unit == "oz":
         return size * 28.3495
@@ -873,8 +889,7 @@ def pantry_edible_grams(pantry_item, product=None):
     if pkg <= 0:
         return _pantry_to_grams_direct(pantry_item)
 
-    prod_unit = (product.get("unit") or "item").lower()
-    prod_size = float(product.get("size") or 1)
+    prod_size, prod_unit = product_size(product)
     pname = (product.get("name") or "").lower()
 
     if punit == "count" and prod_unit == "lb" and "banana" in pname:

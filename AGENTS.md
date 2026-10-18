@@ -2,7 +2,7 @@
 
 Grocery assistant (working name Cartwise) for DubHacks '26, Visa track. The engine decides Buy / Skip / Swap, prices, savings, catalog matches, pantry skips, and group-cart merges. Gemini only writes the words. Prices are seeded sample data. Checkout and payments are not built. There is no weekly recap Gemini route yet.
 
-The root [README.md](README.md) is the product pitch. It lists Expo, Perceptron, voice, and a Gemini recap that are **not in the repo**. Photon group chat **is** in the repo (`POST /agent/message` plus [`photon-agent/`](photon-agent/)). Trust this file and `backend/` for what exists.
+The root [README.md](README.md) is the product pitch. It lists Expo, Perceptron, voice, and a Gemini recap that are **not in the repo**. Photon iMessage **is** in the repo: 1:1 DMs → `POST /agent/personal`, group chats → `POST /agent/message` (see [`photon-agent/`](photon-agent/)). Trust this file and `backend/` for what exists.
 
 ## Where to edit
 
@@ -17,15 +17,16 @@ Not implemented: Expo `app/`, Perceptron scan, Grok Voice, Grok Imagine, nutriti
 | Path | Role |
 |---|---|
 | [backend/app/main.py](backend/app/main.py) | FastAPI routes. Loads user, product, pantry, week spend, household cart; calls the engine, Gemini, and the chat agent. |
-| [backend/app/engine.py](backend/app/engine.py) | All math. No HTTP, no model imports. Convince Me plus group-cart helpers. |
+| [backend/app/engine.py](backend/app/engine.py) | All math. No HTTP, no model imports. Convince Me plus group-cart and personal-list helpers. |
 | [backend/app/grok.py](backend/app/grok.py) | Explains Convince Me engine facts (via Gemini). `postprocess` overwrites the model's numbers. Missing key, timeout, or bad JSON falls back to the engine (`"source": "engine"`). |
 | [backend/app/gemini.py](backend/app/gemini.py) | OpenAI-compatible Gemini chat client (`GEMINI_API_KEY`, `GEMINI_MODEL`). |
 | [backend/app/agent.py](backend/app/agent.py) | iMessage group-cart tool loop. Tools call the engine. Regex fallback if Gemini is down. |
+| [backend/app/personal_agent.py](backend/app/personal_agent.py) | 1:1 DM grocery planner. Personal list, budget, expiring, evaluate. Regex fallback if Gemini is down. |
 | [backend/app/db.py](backend/app/db.py) | Motor client, database name, collection list, indexes. |
 | [backend/seed.py](backend/seed.py) | Drops every collection and inserts sample products, Maya, Alex, pantry, and household. |
 | [backend/test_engine.py](backend/test_engine.py) | Offline tests. No database and no API key. |
 | [backend/.env.example](backend/.env.example) | `MONGODB_URI`, `DB_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `PERCEPTRON_API_KEY`. Photon vars belong in `photon-agent/.env`. |
-| [photon-agent/index.js](photon-agent/index.js) | Spectrum webhook sidecar. Forwards text to FastAPI, sends the reply with `space.send()`. Does not parse groceries. |
+| [photon-agent/index.js](photon-agent/index.js) | Spectrum webhook sidecar. Routes iMessage `dm` → `/agent/personal`, `group` → `/agent/message`. Sends the reply with `space.send()`. Does not parse groceries. |
 
 ## Run
 
@@ -54,7 +55,7 @@ Docs: http://localhost:8000/docs
 
 `python seed.py` prints Maya's id. It is always `665f00000000000000000001`. Alex is `665f00000000000000000002`. Household is `665f00000000000000000010`.
 
-Group iMessage needs a Photon **Business dedicated line**. Shared-pool lines cannot send to groups. Register a public HTTPS URL (tunnel) as the Spectrum webhook: `POST /spectrum/webhook` on port 3000.
+**1:1 DMs** work on shared-pool or Business lines. **Group** iMessage needs a Photon **Business dedicated line**; shared-pool lines cannot send to groups. Register a public HTTPS URL (tunnel) as the Spectrum webhook: `POST /spectrum/webhook` on port 3000.
 
 ## HTTP
 
@@ -67,7 +68,9 @@ Group iMessage needs a Photon **Business dedicated line**. Shared-pool lines can
 | `POST` | `/users/{id}/pantry` | Body: `name`, optional `quantity`, `unit`, `product_id`, `expires_at`. |
 | `GET` | `/users/{id}/savings` | Sum of `savings_ledger.amount` for that user. |
 | `POST` | `/convince-me` | Body: `user_id` plus `product_id`, `barcode`, or `query`. `log: false` (or `?log=false`) skips writes. |
-| `POST` | `/agent/message` | Photon (or curl) inbound text. Mutates `group_carts`. |
+| `POST` | `/agent/message` | Group iMessage (or curl). Mutates `group_carts`. |
+| `POST` | `/agent/personal` | 1:1 DM (or curl). Mutates `personal_lists`. Unknown phone gets a signup message (no Maya default). |
+| `GET` | `/users/{id}/list` | Personal shopping list summary. |
 | `GET` | `/households/{id}/cart` | Current group cart for that household. |
 
 ### Convince Me
@@ -96,6 +99,20 @@ Expected: Skip Whole Milk (already in pantry). Then Alex `we need hummus and chi
 
 Gemini tools (engine JSON only): `get_pantry`, `resolve_product`, `add_cart_item`, `get_cart`. Missing key / timeout / bad JSON uses regex `add|need` parsing in [backend/app/agent.py](backend/app/agent.py).
 
+### Personal DM (`POST /agent/personal`)
+
+Body: `{ "space_id", "sender", "text", "message_id?", "space_type?" }`. `sender` is E.164 (`+15555550101` Maya). **Only registered phones** are accepted; unknown senders get a short engine reply and no DB writes.
+
+Replies for grocery planning intent (list add/show, budget, expiring, `should I buy …`, etc.). Casual chat → `"ignored": true`, `"reply": null`.
+
+Returns `{ "reply", "list", "source": "gemini"|"engine", "ignored", "logged", "space_id", "user_id" }`. List prices always come from the engine. Personal list is **not** synced to `group_carts`.
+
+```powershell
+curl -X POST http://localhost:8000/agent/personal -H "Content-Type: application/json" -d "{\"space_id\":\"any;-;+15555550101\",\"sender\":\"+15555550101\",\"text\":\"what's expiring and add hummus to my list\"}"
+```
+
+Gemini tools: `get_pantry`, `get_budget_status`, `get_expiring`, `resolve_product`, `add_list_item`, `remove_list_item`, `get_list`, `evaluate_product`. Fallback regex in [backend/app/personal_agent.py](backend/app/personal_agent.py).
+
 ## Data
 
 Database name defaults to `app`. Collections in [backend/app/db.py](backend/app/db.py):
@@ -109,7 +126,8 @@ Database name defaults to `app`. Collections in [backend/app/db.py](backend/app/
 | `carts` | Read by `/convince-me` for spend in the last 7 days (`total`). Seed leaves this empty, so week spend is 0. |
 | `decisions` | One document per logged `/convince-me` call. |
 | `savings_ledger` | Written only when the final Convince Me verdict is Swap and `savings > 0`. |
-| `group_carts` | One doc per Photon `space_id` (use `"demo"` when curling). Written by `/agent/message`. |
+| `group_carts` | One doc per Photon group `space_id` (use `"demo"` when curling). Written by `/agent/message`. |
+| `personal_lists` | One doc per `user_id`. Written by `/agent/personal`. Separate from group cart. |
 
 `group_carts` shape:
 
@@ -126,6 +144,22 @@ Database name defaults to `app`. Collections in [backend/app/db.py](backend/app/
     "price": 3.49
   }],
   "skipped": [{ "name": "Whole Milk", "pantry_name": "Whole Milk", "requester": "665f00000000000000000001" }]
+}
+```
+
+`personal_lists` shape:
+
+```json
+{
+  "user_id": "665f00000000000000000001",
+  "items": [{
+    "product_id": "…",
+    "name": "Hummus Classic",
+    "quantity": 1,
+    "store": "Store B",
+    "price": 3.49
+  }],
+  "skipped": [{ "name": "Whole Milk", "pantry_name": "Whole Milk" }]
 }
 ```
 
@@ -154,6 +188,14 @@ Do **not** reuse `in_pantry()` for adds. Category match would skip "hummus" beca
 3. `add_to_group_cart(cart, product, user_id, pantry)` — pantry hit → append `skipped`, do not add; same `product_id` → append requester; else insert with `cheapest()` store and price.
 4. `cart_summary(cart)` — lines, skipped, `total` (sum of cheapest prices). No equal-split math.
 
+## Personal list rules
+
+Same name matching as group cart (`resolve_product`, `pantry_name_match`), but persistence is per user and duplicate `product_id` **bumps quantity** instead of merging requesters:
+
+1. `add_to_personal_list(cart, product, pantry)` — pantry hit → `skipped`; else append or increment quantity with `cheapest()` store/price.
+2. `remove_from_personal_list(cart, product_id)` — drop line or `not_found`.
+3. `cart_summary(cart)` — same totals helper as group cart.
+
 ## Demo users
 
 Maya's pantry (days until expiry, from seed time): spinach 1, plain Greek yogurt 2, whole milk 2, chicken breast 3, bananas 4, eggs 9, cheddar 21, granola 60, rice 365, black beans 540. Items expiring within 3 days are attached in `main.py` as `expiring_soon` before Convince Me `explain()` runs. The engine itself does not compute expiry.
@@ -162,10 +204,10 @@ Alex has an empty pantry. Household fridge for the group cart is the **union** (
 
 ## Photon sidecar
 
-[`photon-agent/`](photon-agent/) uses `spectrum-ts` + `@spectrum-ts/express`. Env: `SPECTRUM_PROJECT_ID`, `SPECTRUM_PROJECT_SECRET`, `SPECTRUM_WEBHOOK_SECRET`, `BACKEND_URL`. FastAPI never calls Photon. The sidecar ignores non-text, outbound echoes, and duplicate `message.id`. If FastAPI is down it sends "Cartwise is offline — try again in a minute." It does not guess cart contents.
+[`photon-agent/`](photon-agent/) uses `spectrum-ts` + `@spectrum-ts/express`. Env: `SPECTRUM_PROJECT_ID`, `SPECTRUM_PROJECT_SECRET`, `SPECTRUM_WEBHOOK_SECRET`, `BACKEND_URL`. FastAPI never calls Photon. For iMessage, `imessage(space).type === "dm"` routes to `/agent/personal`; otherwise `/agent/message`. The sidecar ignores non-text, outbound echoes, and duplicate `message.id`. If FastAPI is down it sends "Cartwise is offline — try again in a minute." It does not guess cart contents.
 
 ## Not built
 
 Do not add these unless asked: Expo app, Perceptron scan, Grok Voice, Grok Imagine, nutrition-gap shopping list, group-cart cost split, mock Visa checkout, weekly recap, Gemini.
 
-Planned routes in the root README (`/convince`, `/pantry/scan`, `/list`, `/voice/session`, `/ledger`) are not the live API. The live convince route is `POST /convince-me`. The live chat route is `POST /agent/message`. The live savings route is `GET /users/{id}/savings`.
+Planned routes in the root README (`/convince`, `/pantry/scan`, `/list`, `/voice/session`, `/ledger`) are not the live API. The live convince route is `POST /convince-me`. Group chat is `POST /agent/message`; 1:1 DM is `POST /agent/personal`. Personal list read is `GET /users/{id}/list`. Savings: `GET /users/{id}/savings`.

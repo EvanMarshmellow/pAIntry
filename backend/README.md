@@ -13,7 +13,7 @@
 5. `uvicorn app.main:app --reload` → open http://localhost:8000/docs
 
 ## Endpoints
-`GET /health` · `GET /products?category=` · `GET /users/{id}` · `GET/POST /users/{id}/pantry` · `GET /users/{id}/savings` · `POST /agent/message` · `GET /households/{id}/cart`
+`GET /health` · `GET /products?category=` · `GET /users/{id}` · `GET/POST /users/{id}/pantry` · `GET /users/{id}/savings` · `GET /users/{id}/list` · `POST /agent/personal` · `POST /agent/message` · `GET /households/{id}/cart`
 
 All prices/products are **sample data**.
 
@@ -41,3 +41,16 @@ curl -X POST http://localhost:8000/agent/message -H "Content-Type: application/j
 ```
 
 Expected: Skip Whole Milk (already in pantry). Photon sidecar: `cd photon-agent && npm start` (see repo `AGENTS.md`).
+
+## Personal DM (1:1 iMessage / curl)
+
+Maya `+15555550101`. Personal list is stored in `personal_lists` (not the household group cart). Photon routes DMs to `/agent/personal` automatically.
+
+```bash
+curl -X POST http://localhost:8000/agent/personal -H "Content-Type: application/json" \
+  -d '{"space_id":"any;-;+15555550101","sender":"+15555550101","text":"what'\''s expiring and add hummus to my list"}'
+```
+
+```bash
+curl http://localhost:8000/users/665f00000000000000000001/list
+```

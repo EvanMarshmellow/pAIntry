@@ -1,7 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import { Spectrum } from "spectrum-ts";
-import { imessage } from "spectrum-ts/providers/imessage";
+import { imessage as imessageProvider } from "spectrum-ts/providers/imessage";
 import { spectrum } from "@spectrum-ts/express";
 
 const BACKEND_URL = (process.env.BACKEND_URL || "http://localhost:8000").replace(/\/$/, "");
@@ -19,8 +19,22 @@ function remember(id) {
   return false;
 }
 
-async function askBackend({ spaceId, sender, text, messageId }) {
-  const res = await fetch(`${BACKEND_URL}/agent/message`, {
+function backendPath(space, message) {
+  if (message.platform === "imessage") {
+    try {
+      const im = imessageProvider(space);
+      if (im.type === "dm") {
+        return "/agent/personal";
+      }
+    } catch {
+      /* fall through to group route */
+    }
+  }
+  return "/agent/message";
+}
+
+async function askBackend({ path, spaceId, sender, text, messageId, spaceType }) {
+  const res = await fetch(`${BACKEND_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -28,6 +42,7 @@ async function askBackend({ spaceId, sender, text, messageId }) {
       sender,
       text,
       message_id: messageId,
+      space_type: spaceType,
     }),
   });
   if (!res.ok) {
@@ -47,12 +62,16 @@ async function onMessage(space, message) {
 
   const spaceId = space.id || message.space?.id;
   const sender = message.sender?.id;
+  const path = backendPath(space, message);
+  const spaceType = path === "/agent/personal" ? "dm" : "group";
   try {
     const result = await askBackend({
+      path,
       spaceId,
       sender,
       text,
       messageId: message.id,
+      spaceType,
     });
     if (result.ignored || !result.reply) return;
     await space.send(result.reply);
@@ -75,7 +94,7 @@ if (projectId && projectSecret && webhookSecret) {
   const app = await Spectrum({
     projectId,
     projectSecret,
-    providers: [imessage.config()],
+    providers: [imessageProvider.config()],
     webhookSecret,
   });
   server.use(spectrum({ app, onMessage }));

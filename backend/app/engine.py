@@ -181,3 +181,52 @@ def cart_summary(cart):
     total = round(sum((line.get("price") or 0) for line in items), 2)
     return {"items": items, "skipped": list((cart or {}).get("skipped") or []),
             "total": total, "count": len(items)}
+
+
+# --- Personal list (solo DM; no requesters / household merge) ---
+
+
+def empty_personal_list():
+    return {"items": [], "skipped": []}
+
+
+def add_to_personal_list(cart, product, pantry):
+    """Skip pantry hits; duplicate product_id bumps quantity."""
+    out = {
+        "items": [dict(line) for line in (cart or {}).get("items") or []],
+        "skipped": list((cart or {}).get("skipped") or []),
+    }
+    have = pantry_name_match(product, pantry)
+    name = product["name"]
+    if have:
+        out["skipped"].append({"name": name, "pantry_name": have})
+        return out, {"action": "skipped", "product": name, "pantry_name": have}
+    pid = _pid(product)
+    for line in out["items"]:
+        if str(line.get("product_id")) == pid:
+            line["quantity"] = int(line.get("quantity") or 1) + 1
+            return out, {"action": "quantity", "name": name, "product_id": pid,
+                         "quantity": line["quantity"], "store": line.get("store"), "price": line.get("price")}
+    store, price = cheapest(product)
+    line = {"product_id": pid, "name": name, "quantity": 1, "store": store, "price": price}
+    out["items"].append(line)
+    return out, {"action": "added", **line}
+
+
+def remove_from_personal_list(cart, product_id):
+    out = {
+        "items": [dict(line) for line in (cart or {}).get("items") or []],
+        "skipped": list((cart or {}).get("skipped") or []),
+    }
+    pid = str(product_id)
+    removed_name = None
+    kept = []
+    for line in out["items"]:
+        if str(line.get("product_id")) == pid:
+            removed_name = line.get("name")
+        else:
+            kept.append(line)
+    if removed_name is None:
+        return out, {"action": "not_found", "product_id": pid}
+    out["items"] = kept
+    return out, {"action": "removed", "name": removed_name, "product_id": pid}

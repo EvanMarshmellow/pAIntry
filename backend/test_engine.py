@@ -3,8 +3,10 @@ import asyncio
 import os
 
 from app.agent import CartContext, handle, is_grocery_intent, parse_add_queries
-from app.engine import (add_to_group_cart, analyze, cart_summary, empty_group_cart,
-                        pantry_name_match, resolve_product)
+from app.personal_agent import PersonalContext, handle as handle_personal, is_personal_intent
+from app.engine import (add_to_group_cart, add_to_personal_list, analyze, cart_summary,
+                        empty_group_cart, empty_personal_list, pantry_name_match,
+                        remove_from_personal_list, resolve_product)
 from app.grok import DATA_SOURCES, Verdict, explain, postprocess
 
 
@@ -116,6 +118,20 @@ def test_add_skips_pantry_milk():
     assert cart["items"] == [] and cart["skipped"][0]["name"] == "Whole Milk"
 
 
+def test_personal_list_skip_and_quantity():
+    cart, result = add_to_personal_list(empty_personal_list(), MILK, PANTRY_MILK)
+    assert result["action"] == "skipped" and cart["items"] == []
+    cart, result = add_to_personal_list(empty_personal_list(), HUMMUS, PANTRY_MILK)
+    assert result["action"] == "added" and result["quantity"] == 1
+    cart, result = add_to_personal_list(cart, HUMMUS, PANTRY_MILK)
+    assert result["action"] == "quantity" and result["quantity"] == 2
+    assert len(cart["items"]) == 1
+    pid = cart["items"][0]["product_id"]
+    cart, result = remove_from_personal_list(cart, pid)
+    assert result["action"] == "removed" and result["name"] == "Hummus Classic"
+    assert cart["items"] == []
+
+
 def test_add_hummus_then_merge():
     cart, result = add_to_group_cart(empty_group_cart(), HUMMUS, "alex", PANTRY_MILK)
     assert result["action"] == "added" and result["price"] == 3.49 and result["store"] == "Store B"
@@ -152,6 +168,30 @@ def test_agent_fallback_skip_add_merge():
 
     ignored = asyncio.run(handle("see you tonight", ctx))
     assert ignored["ignored"] is True and ignored["reply"] is None
+
+
+EGGS = prod("Large Eggs", "dairy_eggs", 6, {"Store B": 2.99})
+
+
+def test_personal_agent_fallback():
+    os.environ.pop("GEMINI_API_KEY", None)
+    catalog = CATALOG + [EGGS]
+    ctx = PersonalContext(catalog, PANTRY_MILK, empty_personal_list(), MAYA, "maya", "Maya")
+    skip = asyncio.run(handle_personal("add milk to my list", ctx))
+    assert skip["source"] == "engine" and skip["ignored"] is False
+    assert "Whole Milk" in skip["reply"] and skip["list"]["items"] == []
+
+    ctx = PersonalContext(catalog, PANTRY_MILK, empty_personal_list(), MAYA, "maya", "Maya")
+    added = asyncio.run(handle_personal("add hummus", ctx))
+    assert added["list"]["items"][0]["name"] == "Hummus Classic"
+
+    ctx = PersonalContext(catalog, PANTRY_MILK, ctx.list, MAYA, "maya", "Maya")
+    show = asyncio.run(handle_personal("what's on my list?", ctx))
+    assert "Hummus" in show["reply"] and show["list"]["total"] == 3.49
+
+    ignored = asyncio.run(handle_personal("see you tonight", ctx))
+    assert ignored["ignored"] is True and ignored["reply"] is None
+    assert is_personal_intent("what's expiring") and not is_personal_intent("see you tonight")
 
 
 if __name__ == "__main__":

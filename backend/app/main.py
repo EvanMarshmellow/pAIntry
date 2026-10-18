@@ -12,6 +12,7 @@ from app.agent import CartContext, handle as handle_agent
 from app.db import close, connect, get_db
 from app.engine import analyze, cart_summary
 from app.grok import explain
+from app.personal_agent import PersonalContext, handle as handle_personal
 
 MAYA_ID = ObjectId("665f00000000000000000001")
 
@@ -99,6 +100,25 @@ def _aware(dt):
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)  # Mongo returns naive UTC
 
 
+async def _user_pantry(db, user_id: str):
+    return await db.pantry_items.find({"user_id": user_id}).sort("expires_at", 1).to_list(500)
+
+
+async def _week_spent(db, user_id: str) -> float:
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    carts = await db.carts.find({"user_id": user_id, "created_at": {"$gte": week_ago}}).to_list(200)
+    return sum(c.get("total", 0) for c in carts)
+
+
+def _expiring_soon(pantry):
+    soon = datetime.now(timezone.utc) + timedelta(days=3)
+    now = datetime.now(timezone.utc)
+    return [
+        {"name": i["name"], "days": max(0, (_aware(i["expires_at"]) - now).days)}
+        for i in pantry if i.get("expires_at") and _aware(i["expires_at"]) <= soon
+    ]
+
+
 class ConvinceIn(BaseModel):
     user_id: str
     product_id: str | None = None
@@ -126,17 +146,12 @@ async def convince_me(body: ConvinceIn, log: bool | None = None):
     if not product:
         raise HTTPException(404, "Product not found")
 
-    pantry = await db.pantry_items.find({"user_id": body.user_id}).to_list(500)
+    pantry = await _user_pantry(db, body.user_id)
     alternatives = await db.products.find({"category": product.get("category")}).to_list(200)
-    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    carts = await db.carts.find({"user_id": body.user_id, "created_at": {"$gte": week_ago}}).to_list(200)
-    week_spent = sum(c.get("total", 0) for c in carts)
+    week_spent = await _week_spent(db, body.user_id)
 
     facts = analyze(product, user, pantry, alternatives, week_spent)
-    soon = datetime.now(timezone.utc) + timedelta(days=3)
-    facts["expiring_soon"] = [
-        {"name": i["name"], "days": max(0, (_aware(i["expires_at"]) - datetime.now(timezone.utc)).days)}
-        for i in pantry if i.get("expires_at") and _aware(i["expires_at"]) <= soon]
+    facts["expiring_soon"] = _expiring_soon(pantry)
     result = await explain(facts)
     now = datetime.now(timezone.utc)
     if not do_log:
@@ -155,6 +170,11 @@ class AgentMessageIn(BaseModel):
     sender: str
     text: str
     message_id: str | None = None
+    space_type: str | None = None
+
+
+async def _user_by_phone(db, sender: str):
+    return await db.users.find_one({"phone": sender})
 
 
 async def _user_by_sender(db, sender: str):
@@ -216,6 +236,59 @@ async def agent_message(body: AgentMessageIn):
             upsert=True)
     return clean(result | {"logged": not result.get("ignored"), "space_id": body.space_id,
                            "user_id": uid, "household_id": str(household["_id"])})
+
+
+@app.post("/agent/personal")
+async def agent_personal(body: AgentMessageIn):
+    db = get_db()
+    user = await _user_by_phone(db, body.sender)
+    if not user:
+        return {
+            "reply": "I don't recognize this number yet — ask your household admin to link your phone in Cartwise.",
+            "list": {"items": [], "skipped": [], "total": 0, "count": 0},
+            "source": "engine",
+            "ignored": False,
+            "logged": False,
+            "space_id": body.space_id,
+            "user_id": None,
+        }
+    uid = str(user["_id"])
+    pantry = await _user_pantry(db, uid)
+    week_spent = await _week_spent(db, uid)
+    products = await db.products.find({}).to_list(500)
+    list_doc = await db.personal_lists.find_one({"user_id": uid}) or {"user_id": uid, "items": [], "skipped": []}
+    ctx = PersonalContext(
+        products=products,
+        pantry=pantry,
+        personal_list={"items": list(list_doc.get("items") or []),
+                       "skipped": list(list_doc.get("skipped") or [])},
+        user=user,
+        user_id=uid,
+        user_name=user.get("name", "Friend"),
+        week_spent=week_spent,
+    )
+    result = await handle_personal(body.text, ctx)
+    if not result.get("ignored"):
+        now = datetime.now(timezone.utc)
+        await db.personal_lists.update_one(
+            {"user_id": uid},
+            {"$set": {"user_id": uid,
+                      "items": ctx.list.get("items") or [],
+                      "skipped": ctx.list.get("skipped") or [],
+                      "updated_at": now}},
+            upsert=True)
+    return clean(result | {"logged": not result.get("ignored"), "space_id": body.space_id, "user_id": uid})
+
+
+@app.get("/users/{user_id}/list")
+async def get_personal_list(user_id: str):
+    db = get_db()
+    if not await db.users.find_one({"_id": oid(user_id)}):
+        raise HTTPException(404, "User not found")
+    doc = await db.personal_lists.find_one({"user_id": user_id})
+    if not doc:
+        return {"user_id": user_id, "items": [], "skipped": [], "total": 0, "count": 0}
+    return clean(cart_summary(doc) | {"user_id": user_id})
 
 
 @app.get("/households/{household_id}/cart")

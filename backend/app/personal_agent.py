@@ -7,8 +7,9 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from app import gemini
-from app.engine import (add_live_product, analyze, cart_summary, cheapest,
-                        clear_personal_list, list_line_for_query, remove_from_personal_list,
+from app.engine import (add_live_product, add_spoken_personal_pantry_item, analyze, cart_summary,
+                        cheapest, clear_personal_list, list_line_for_query,
+                        move_personal_list_to_pantry, remove_from_personal_list,
                         resolve_product, split_grocery_phrases)
 from app.grok import engine_headline, engine_reasons
 from app.kroger import search_for_list
@@ -23,6 +24,7 @@ Rules:
 - If resolve_product found is false, say it wasn't found at nearby Kroger stores and do not add it.
 - If add_list_item action is skipped, say they already have that pantry item at home.
 - Call clear_list only when they want the entire list deleted. remove_list_item removes one product.
+- "add X to my pantry" and "add everything from my list to my pantry" stock the personal pantry. Do not put those phrases on the shopping list.
 - Short iMessage, under 5 sentences. No medical advice.
 Reply with ONLY JSON: {"reply":"your text"}"""
 TOOLS = [
@@ -234,7 +236,77 @@ def is_list_intent(text):
     return bool(LIST_RE.search(text or ""))
 
 
+_PANTRY_ASK = {
+    "something", "anything", "an item", "stuff", "food", "item", "items",
+}
+_PANTRY_ALL_RE = re.compile(
+    r"\b(?:add|move|put)\s+"
+    r"(?:everything(?:\s+(?:from|on)\s+(?:my|the)\s+list)?|"
+    r"all(?:\s+of)?\s+(?:my|the)\s+list|"
+    r"(?:my|the)\s+whole\s+list)"
+    r"\s+(?:in|into|to)\s+(?:my\s+)?pantry\b",
+    re.I,
+)
+_PANTRY_ONE_RE = re.compile(
+    r"\badd\s+(.+?)\s+to\s+(?:my\s+)?pantry\b",
+    re.I,
+)
+
+
+def parse_pantry_move(text):
+    """Return ('all', None), ('ask', None), ('one', query), or None.
+
+    Whole-list phrases are recognized before a single item name, so
+    "everything" is never stored as a food.
+    """
+    t = _list_text(text)
+    if not t or not re.search(r"\bpantry\b", t, re.I):
+        return None
+    if _PANTRY_ALL_RE.search(t):
+        return ("all", None)
+    match = _PANTRY_ONE_RE.search(t)
+    if not match:
+        return None
+    query = re.sub(r"^(?:some|the)\s+", "", match.group(1).strip(), flags=re.I).strip(" .,!?")
+    if not query or query.lower() in _PANTRY_ASK:
+        return ("ask", None)
+    if _PANTRY_ALL_RE.search(f"add {query} to my pantry"):
+        return ("all", None)
+    return ("one", query)
+
+
+def _qty_text(quantity):
+    number = float(quantity or 1)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:g}"
+
+
+def format_pantry_move(result):
+    action = result.get("action")
+    if action == "empty":
+        return "Your list is already empty."
+    if action == "moved_all":
+        names = [item.get("name") for item in result.get("items") or [] if item.get("name")]
+        if len(names) == 1:
+            return f"Added {names[0]} from your list to your pantry."
+        return f"Added {len(names)} items from your list to your pantry: {', '.join(names)}."
+    name = result.get("name") or "that item"
+    if result.get("from_list"):
+        if action == "quantity":
+            return f"Moved {name} from your list to your pantry. You now have {_qty_text(result.get('quantity'))}."
+        moved = _qty_text(result.get("list_quantity") or result.get("quantity"))
+        if moved == "1":
+            return f"Moved {name} from your list to your pantry."
+        return f"Moved {moved} {name} from your list to your pantry."
+    if action == "quantity":
+        return f"Updated {name} — quantity {_qty_text(result.get('quantity'))} in your pantry."
+    return f"Added {name} to your pantry."
+
+
 def parse_add_queries(text):
+    if parse_pantry_move(text):
+        return []
     t = re.sub(r"@cartwise\b", " ", text or "", flags=re.I)
     t = re.sub(r"\s+", " ", t).strip(" .,!?")
     m = re.search(
@@ -343,6 +415,23 @@ async def fallback(text, ctx: PersonalContext) -> dict:
             facts = analyze(p, ctx.user, ctx.pantry, ctx._alternatives(p), ctx.week_spent)
             verdict = facts["draft_verdict"]
             extras.append(engine_headline(verdict, facts) + " " + " ".join(engine_reasons(verdict, facts)[:2]))
+    pantry_move = parse_pantry_move(text)
+    if pantry_move:
+        kind, query = pantry_move
+        if kind == "ask":
+            reply = "Which item should I add to your pantry?"
+        elif kind == "all":
+            ctx.list, ctx.pantry, result = move_personal_list_to_pantry(ctx.list, ctx.pantry)
+            ctx.results.append(result)
+            reply = format_pantry_move(result)
+        else:
+            ctx.list, ctx.pantry, result = add_spoken_personal_pantry_item(
+                ctx.list, ctx.pantry, query, ctx.products)
+            ctx.results.append(result)
+            reply = format_pantry_move(result)
+        if extras:
+            reply = " ".join(extras + [reply])
+        return {"reply": reply, "list": cart_summary(ctx.list), "source": "engine", "ignored": False}
     if parse_clear(text):
         ctx.list, result = clear_personal_list(ctx.list)
         ctx.results.append(result)
@@ -394,7 +483,7 @@ def _parse_reply(text):
 async def handle(text, ctx: PersonalContext) -> dict:
     if not is_personal_intent(text):
         return {"reply": None, "list": cart_summary(ctx.list), "source": "engine", "ignored": True}
-    if parse_clear(text) or not gemini.api_key():
+    if parse_clear(text) or parse_pantry_move(text) or not gemini.api_key():
         return await fallback(text, ctx)
     msgs = [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"{ctx.user_name} says: {text}"}]

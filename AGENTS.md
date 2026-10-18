@@ -135,6 +135,8 @@ curl -X POST http://localhost:8000/agent/personal -H "Content-Type: application/
 
 Gemini tools: `get_pantry`, `get_budget_status`, `get_expiring`, `resolve_product`, `add_list_item`, `remove_list_item`, `clear_list`, `get_list`, `evaluate_product`. Fallback regex in [backend/app/personal_agent.py](backend/app/personal_agent.py). List adds search Kroger the same way as the group list. `product_id` on new lines is the UPC. `remove oreos` matches those words against list line names. `clear my list`, `remove my list`, `delete the list`, and `empty my cart` wipe every line. `should I buy` still uses the seeded catalog.
 
+Pantry stocking is regex-only, before any list add, so Gemini cannot file it as a shopping-list line and Kroger is not called. `I want to add everything from my list to my pantry`, `add all of my list to my pantry`, and `add my whole list to my pantry` move every personal-list line into `pantry_items` (name, quantity, `product_id`) and drop those lines. Pantry skips on the list stay there. An empty list replies that it is already empty. `add eggs to my pantry` moves that list line when the name matches; otherwise it adds the spoken name at quantity 1, filling `product_id` from the seeded catalog when the name matches. A pantry name overlap increments quantity. `I want to add something to my pantry`, with no food named, asks which item and writes nothing. A changed pantry line is updated in place; a new line is inserted with `user_id` and `added_at`. Other pantry docs, including expiry, stay put. `add milk` with no pantry words still goes on the list.
+
 The app cart is this same `personal_lists` document. Profile links a phone with `POST /users/{id}/phone/start` and `/phone/verify`. A phone-only user (no email, not Maya or Alex) is merged: list quantities for the same `product_id` are summed, pantry lines move, and that user is deleted. Writes carry a `revision` and retry once when another writer saved first.
 
 ### Receipt photo (DM or group)
@@ -246,6 +248,8 @@ Same name matching as group cart (`resolve_product`, `pantry_name_match`), but p
 3. `set_personal_list_quantity(cart, product_id, quantity)` — set one line. Quantity `<= 0` removes that line only. The app stepper uses this.
 4. `clear_personal_list(cart)` — drop every line and every pantry skip. iMessage clear phrases and `DELETE /users/{id}/list` use this.
 5. `cart_summary(cart)` — same totals helper as group cart.
+6. `move_personal_list_to_pantry(cart, pantry)` — move every list line into the personal pantry and clear those lines. Skips stay.
+7. `add_spoken_personal_pantry_item(cart, pantry, query, products)` — move one matching list line, or append the spoken name at quantity 1. Name overlap increments quantity.
 
 ## Demo users
 

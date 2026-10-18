@@ -65,6 +65,20 @@ def test_ignore_suggestion():
     assert turn.session is None
 
 
+def test_group_pantry_docs_have_no_user_id():
+    ocr = {"items": [{"product": "mystery item", "price": "$1.00"}]}
+    lines = match_ocr_lines(ocr, CATALOG)
+    owner = {"household_id": "h1", "space_id": "apt", "added_by": "+15555550199"}
+    session = new_session("group:apt", "apt", ocr, lines, owner=owner)
+    turn = handle_session_text(session, "yes", MAYA, [], CATALOG, 0)
+    docs = pantry_docs_from_session(turn.session, turn.session["user_id"])
+    assert docs[0]["household_id"] == "h1"
+    assert docs[0]["space_id"] == "apt"
+    assert docs[0]["added_by"] == "+15555550199"
+    assert "user_id" not in docs[0]
+    assert "user_id" not in turn.pantry_docs[0]
+
+
 def test_skip_tips():
     session = new_session("u1", "s", {"items": []}, [])
     session["state"] = STATE_OFFER

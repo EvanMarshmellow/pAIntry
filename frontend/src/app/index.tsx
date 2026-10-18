@@ -6,7 +6,6 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { Segmented } from '@/components/Segmented'
 import { ShoppingView } from '@/features/shopping/ShoppingView'
 import { StorageView } from '@/features/storage/StorageView'
-import { useUser } from '@/lib/session'
 import { colors } from '@/theme'
 
 const SECTIONS = [
@@ -17,14 +16,13 @@ const SECTIONS = [
 type Section = (typeof SECTIONS)[number]['value']
 
 export default function Home() {
-  const user = useUser()
   const [section, setSection] = useState<Section>('shopping')
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
         <View style={styles.topRow}>
-          <Text style={styles.greeting}>Hi, {user.name}</Text>
+          <Text style={styles.greeting}>Hi,</Text>
           <Link href="/profile" asChild>
             <Pressable hitSlop={8} accessibilityLabel="Profile">
               <Ionicons name="person-circle-outline" size={32} color={colors.ink} />

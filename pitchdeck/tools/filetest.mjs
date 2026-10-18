@@ -1,0 +1,18 @@
+import puppeteer from 'puppeteer-core';
+const browser = await puppeteer.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: 'new', args: ['--use-angle=metal','--enable-gpu','--ignore-gpu-blocklist'] });
+const p = await browser.newPage();
+await p.setViewport({ width: 1440, height: 900 });
+const logs = [];
+p.on('console', m => { if (m.type() === 'error' || m.type() === 'warning') logs.push(m.type() + ': ' + m.text().slice(0,200)); });
+p.on('pageerror', e => logs.push('pageerror: ' + e.message));
+p.on('requestfailed', r => logs.push('reqfail: ' + r.url().slice(0,80)));
+await p.goto('file://' + process.cwd() + '/main.html', { waitUntil: 'load', timeout: 60000 });
+await p.waitForFunction(() => window.__kage && (window.__kage.RIG || window.__kage.fallback), { timeout: 60000 }).catch(e => logs.push('wait: ' + e.message));
+await new Promise(r => setTimeout(r, 3000));
+console.log('fallback:', await p.evaluate(() => !!(window.__kage && window.__kage.fallback)));
+await p.screenshot({ path: '/private/tmp/claude-501/-Volumes-externalssd-Github-project-pAIntry/00ce6ea9-3e1d-4ae7-b5ee-83d73e4021ca/scratchpad/hero.png' });
+await p.evaluate(() => document.querySelector('#lessons').scrollIntoView());
+await new Promise(r => setTimeout(r, 3000));
+await p.screenshot({ path: '/private/tmp/claude-501/-Volumes-externalssd-Github-project-pAIntry/00ce6ea9-3e1d-4ae7-b5ee-83d73e4021ca/scratchpad/lessons.png' });
+console.log(logs.join('\n') || 'no console errors');
+await browser.close();

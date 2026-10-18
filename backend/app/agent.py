@@ -6,50 +6,96 @@ import re
 import httpx
 
 from app import gemini
-from app.engine import add_to_group_cart, cart_summary, cheapest, resolve_product
+from app.engine import (
+    add_group_pantry_item, add_to_group_cart, cart_summary, cheapest,
+    move_cart_line_to_group_pantry, remove_group_pantry_item, resolve_product,
+    set_group_pantry_quantity,
+)
 
 log = logging.getLogger("uvicorn.error")
-SYSTEM = """You are Cartwise in a roommate iMessage group helping add groceries to a shared cart.
+SYSTEM = """You are Cartwise in a roommate iMessage group. This chat has a shared shopping list and a separate group pantry. Never read or change anyone's personal pantry.
 Rules:
-- Call tools to match products and change the cart. Never invent a product_id, name, store, or price.
-- If resolve_product found is false, say it is not in the catalog. Do not add it.
-- If add_cart_item action is skipped, say they already have that pantry item. Do not pretend it was added.
+- Call tools to match products and change the list or the group pantry. Never invent a product_id, name, store, or price.
+- "add", "need", and "put on the list" without pantry words go to the shopping list via resolve_product and add_cart_item.
+- Pantry writes use add_pantry_item, set_pantry_quantity, remove_pantry_item, or move_to_pantry. Those tools only change this group's pantry.
+- "move X to the pantry" or "we bought X" is move_to_pantry.
+- "used", "finished", and "move X out" decrement quantity with set_pantry_quantity. Quantity 0 removes the line.
+- "we have N X" or "move X to N" is set_pantry_quantity.
+- If resolve_product found is false, say it is not in the catalog and do not add it to the list. Pantry adds may still use the spoken name.
+- If add_cart_item action is skipped, say it is already in the group pantry. Do not pretend it was added to the list.
 - If action is merged, say it was already on the list and note this person too.
-- Short iMessage, under 4 sentences. No medical advice.
+- Short iMessage, under 4 sentences. Say "group pantry" or "list" so the two stores are obvious. No medical advice.
 Reply with ONLY JSON: {"reply":"your text"}"""
 TOOLS = [
     {"type": "function", "function": {
         "name": "get_pantry",
-        "description": "Household pantry item names already at home",
+        "description": "This iMessage group's pantry only. Not any member's personal pantry.",
         "parameters": {"type": "object", "properties": {}},
     }},
     {"type": "function", "function": {
         "name": "resolve_product",
-        "description": "Match a grocery phrase to one catalog product. Returns found, product_id, name, store, price.",
+        "description": "Match a grocery phrase to one catalog product for the shopping list. Returns found, product_id, name, store, price.",
         "parameters": {"type": "object",
                        "properties": {"query": {"type": "string"}},
                        "required": ["query"]},
     }},
     {"type": "function", "function": {
         "name": "add_cart_item",
-        "description": "Add a catalog product to the group cart by product_id. Skips pantry matches and merges duplicates.",
+        "description": "Add a catalog product to the group shopping list by product_id. Skips group-pantry matches and merges duplicates. Not for pantry writes.",
         "parameters": {"type": "object",
                        "properties": {"product_id": {"type": "string"}},
                        "required": ["product_id"]},
     }},
     {"type": "function", "function": {
         "name": "get_cart",
-        "description": "Current group cart lines, requesters, prices, total, and pantry skips",
+        "description": "Current group shopping list lines, requesters, prices, total, and group-pantry skips",
         "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "add_pantry_item",
+        "description": "Add a grocery phrase to this group's pantry. Name overlap increments quantity. Does not touch personal pantries.",
+        "parameters": {"type": "object",
+                       "properties": {"query": {"type": "string"}, "quantity": {"type": "number"}},
+                       "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "set_pantry_quantity",
+        "description": "Set quantity of a group pantry item. Quantity 0 or less removes it. Use this to decrement after used or finished.",
+        "parameters": {"type": "object",
+                       "properties": {"query": {"type": "string"}, "quantity": {"type": "number"}},
+                       "required": ["query", "quantity"]},
+    }},
+    {"type": "function", "function": {
+        "name": "remove_pantry_item",
+        "description": "Remove a line from this group's pantry.",
+        "parameters": {"type": "object",
+                       "properties": {"query": {"type": "string"}},
+                       "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "move_to_pantry",
+        "description": "Move a shopping-list line into the group pantry. If it is not on the list, add the phrase to the group pantry anyway.",
+        "parameters": {"type": "object",
+                       "properties": {"query": {"type": "string"}},
+                       "required": ["query"]},
     }},
 ]
 INTENT_RE = re.compile(
     r"@cartwise\b|\badd\b|\bneed\b|put on the list|what'?s on the (?:list|cart)|"
-    r"show (?:the )?(?:list|cart)\b|\bon the list\b",
+    r"show (?:the )?(?:list|cart)\b|\bon the list\b|"
+    r"\bpantry\b|\bwe have\b|\bwe bought\b|\bused\b|\bfinished\b|\bmove\b",
     re.I,
 )
 LIST_RE = re.compile(
     r"what'?s on the (?:list|cart)|show (?:the )?(?:list|cart)|get (?:the )?(?:list|cart)",
+    re.I,
+)
+PANTRY_RE = re.compile(
+    r"\bpantry\b|\bwe have\b|\bwe bought\b|\bused\b|\bfinished\b|\bmove\b",
+    re.I,
+)
+PANTRY_LIST_RE = re.compile(
+    r"what'?s in (?:the )?pantry|show (?:the )?(?:group )?pantry|group pantry\b",
     re.I,
 )
 
@@ -90,7 +136,41 @@ class CartContext:
             return result
         if name == "get_cart":
             return labeled_summary(self.cart, self.names)
+        if name == "add_pantry_item":
+            query = args.get("query") or ""
+            quantity = args.get("quantity")
+            if quantity is None:
+                quantity = 1
+            result = self.add_pantry(query, quantity)
+            self.results.append(result)
+            return result
+        if name == "set_pantry_quantity":
+            self.pantry, result = set_group_pantry_quantity(
+                self.pantry, args.get("query") or "", args.get("quantity", 0))
+            self.results.append(result)
+            return result
+        if name == "remove_pantry_item":
+            self.pantry, result = remove_group_pantry_item(self.pantry, args.get("query") or "")
+            self.results.append(result)
+            return result
+        if name == "move_to_pantry":
+            self.cart, self.pantry, result = move_cart_line_to_group_pantry(
+                self.cart, self.pantry, args.get("query") or "", self.user_id)
+            self.results.append(result)
+            return result
         return {"error": f"unknown tool {name}"}
+
+    def add_pantry(self, query, quantity=1):
+        """Resolve against the catalog with pantry=None so a pantry hit is not treated as a skip."""
+        product = resolve_product(query, self.products, pantry=None)
+        name = product["name"] if product else (query or "").strip()
+        product_id = str(product.get("_id", product.get("name"))) if product else None
+        unit = "item"
+        self.pantry, result = add_group_pantry_item(
+            self.pantry, name, quantity=quantity, unit=unit, product_id=product_id, added_by=self.user_id)
+        if not product:
+            result = {**result, "catalog": False}
+        return result
 
 
 def is_grocery_intent(text):
@@ -99,6 +179,115 @@ def is_grocery_intent(text):
 
 def is_list_intent(text):
     return bool(LIST_RE.search(text or ""))
+
+
+def is_pantry_intent(text):
+    return bool(PANTRY_RE.search(text or ""))
+
+
+def _clean_text(text):
+    t = re.sub(r"@cartwise\b", " ", text or "", flags=re.I)
+    return re.sub(r"\s+", " ", t).strip(" .,!?")
+
+
+def _trim_pantry_words(blob):
+    blob = re.sub(
+        r"\s+(?:in|into|to|from)\s+(?:the\s+)?(?:group\s+)?pantry$", "", (blob or "").strip(), flags=re.I)
+    return re.sub(r"[.!?]+$", "", blob).strip()
+
+
+def parse_pantry_action(text):
+    """Return (kind, query, quantity) for a group-pantry phrase, or None.
+
+    kind is list, set, move, use, remove, or add. Shopping-list phrases return None.
+    """
+    t = _clean_text(text)
+    if not t:
+        return None
+    if PANTRY_LIST_RE.search(t) and not re.search(
+            r"\b(?:add|put|move|remove|used|finished|we have|we bought)\b", t, re.I):
+        return ("list", None, None)
+    m = re.search(r"\bwe have\s+(\d+(?:\.\d+)?)\s+(.+)$", t, re.I)
+    if m:
+        return ("set", _trim_pantry_words(m.group(2)), float(m.group(1)))
+    m = re.search(r"\bmove\s+(?:the\s+)?(.+?)\s+to\s+(\d+(?:\.\d+)?)\s*$", t, re.I)
+    if m:
+        return ("set", _trim_pantry_words(m.group(1)), float(m.group(2)))
+    m = re.search(r"\bmove\s+(?:the\s+)?(.+?)\s+out\b", t, re.I)
+    if m:
+        return ("use", _trim_pantry_words(m.group(1)), None)
+    m = re.search(
+        r"\bmove\s+(?:the\s+)?(.+?)\s+(?:in|into|to)\s+(?:the\s+)?(?:group\s+)?pantry\b", t, re.I)
+    if m:
+        return ("move", _trim_pantry_words(m.group(1)), None)
+    m = re.search(r"\bwe bought\s+(.+)$", t, re.I)
+    if m:
+        return ("move", _trim_pantry_words(m.group(1)), None)
+    m = re.search(r"\b(?:used|finished)\s+(?:the\s+)?(.+)$", t, re.I)
+    if m:
+        return ("use", _trim_pantry_words(m.group(1)), None)
+    m = re.search(r"\bremove\s+(.+?)\s+from\s+(?:the\s+)?(?:group\s+)?pantry\b", t, re.I)
+    if m:
+        return ("remove", m.group(1).strip(), None)
+    m = re.search(
+        r"\badd\s+(?:(\d+(?:\.\d+)?)\s+)?(.+?)\s+to\s+(?:the\s+)?(?:group\s+)?pantry\b", t, re.I)
+    if m:
+        qty = float(m.group(1)) if m.group(1) else 1
+        return ("add", m.group(2).strip(), qty)
+    m = re.search(
+        r"\bput\s+(?:(\d+(?:\.\d+)?)\s+)?(.+?)\s+in(?:to)?\s+(?:the\s+)?(?:group\s+)?pantry\b", t, re.I)
+    if m:
+        qty = float(m.group(1)) if m.group(1) else 1
+        return ("add", m.group(2).strip(), qty)
+    m = re.search(r"\bwe have\s+(.+)$", t, re.I)
+    if m and not re.match(r"\d", m.group(1).strip()):
+        return ("add", _trim_pantry_words(m.group(1)), 1)
+    if PANTRY_LIST_RE.search(t):
+        return ("list", None, None)
+    return None
+
+
+def pantry_view(items):
+    view = []
+    for item in items or []:
+        row = {"name": item.get("name"), "quantity": item.get("quantity"), "unit": item.get("unit")}
+        if item.get("product_id"):
+            row["product_id"] = item.get("product_id")
+        if item.get("added_by"):
+            row["added_by"] = item.get("added_by")
+        view.append(row)
+    return view
+
+
+def _current_pantry_qty(items, query):
+    q = (query or "").strip().lower()
+    for item in items or []:
+        name = (item.get("name") or "").lower()
+        if name and (name == q or q in name or name in q):
+            return float(item.get("quantity") or 1)
+    return None
+
+
+def apply_pantry_action(ctx: CartContext, kind, query, quantity):
+    if kind == "add":
+        return ctx.add_pantry(query, quantity if quantity is not None else 1)
+    if kind == "set":
+        ctx.pantry, result = set_group_pantry_quantity(ctx.pantry, query, quantity)
+        return result
+    if kind == "remove":
+        ctx.pantry, result = remove_group_pantry_item(ctx.pantry, query)
+        return result
+    if kind == "use":
+        qty = _current_pantry_qty(ctx.pantry, query)
+        if qty is None:
+            return {"action": "not_found", "query": query}
+        ctx.pantry, result = set_group_pantry_quantity(ctx.pantry, query, qty - 1)
+        return result
+    if kind == "move":
+        ctx.cart, ctx.pantry, result = move_cart_line_to_group_pantry(
+            ctx.cart, ctx.pantry, query, ctx.user_id)
+        return result
+    return {"action": "unknown", "query": query}
 
 
 def parse_add_queries(text):
@@ -133,10 +322,10 @@ def format_engine_reply(results, user_name, summary=None):
     for r in results:
         action = r.get("action")
         if action == "skipped":
-            lines.append(f"Skip {r['product']} — you already have {r['pantry_name']} at home.")
+            lines.append(f"Skip {r['product']} — already in the group pantry ({r['pantry_name']}).")
         elif action == "added":
             price = f"${r['price']:.2f} at {r['store']}" if r.get("price") is not None else "the catalog"
-            lines.append(f"Added {r['name']} ({price}) for {user_name}.")
+            lines.append(f"Added {r['name']} to the list ({price}) for {user_name}.")
         elif action == "merged":
             lines.append(f"{r.get('name') or r.get('product')} is already on the list; noted {user_name} wants it too.")
         elif action == "unknown":
@@ -144,28 +333,76 @@ def format_engine_reply(results, user_name, summary=None):
     if summary and summary.get("items") and not results:
         bits = [f"{i['name']} ${i['price']:.2f} at {i['store']} ({', '.join(i.get('requester_names') or i.get('requesters') or [])})"
                 for i in summary["items"]]
-        lines.append("Cart: " + "; ".join(bits) + f". Total ${summary['total']:.2f}.")
+        lines.append("List: " + "; ".join(bits) + f". Total ${summary['total']:.2f}.")
     elif summary and summary.get("items") and any(r.get("action") in ("added", "merged") for r in results):
         lines.append(f"Cart total ${summary['total']:.2f}.")
     if not lines:
         if summary is not None and not summary.get("items"):
             extra = ""
             if summary.get("skipped"):
-                extra = " Skipped (already in pantry): " + ", ".join(s["name"] for s in summary["skipped"]) + "."
-            return "The group cart is empty." + extra
+                extra = " Skipped (already in the group pantry): " + ", ".join(s["name"] for s in summary["skipped"]) + "."
+            return "The group list is empty." + extra
         return "Tell me what to add, like 'add hummus' or 'we need chips'."
     return " ".join(lines)
 
 
+def format_pantry_list(items):
+    if not items:
+        return "The group pantry is empty."
+    bits = []
+    for item in items:
+        qty = item.get("quantity", 1)
+        unit = item.get("unit") or "item"
+        bits.append(f"{item.get('name')} ({qty} {unit})")
+    return "Group pantry: " + "; ".join(bits) + "."
+
+
+def format_pantry_reply(results):
+    lines = []
+    for r in results:
+        action = r.get("action")
+        name = r.get("name") or r.get("query")
+        if action == "added" and r.get("from_cart"):
+            lines.append(f"Moved {name} from the list to the group pantry.")
+        elif action == "quantity" and r.get("from_cart"):
+            lines.append(f"Moved {name} to the group pantry. Now {r.get('quantity')}.")
+        elif action == "added":
+            lines.append(f"Added {name} to the group pantry.")
+        elif action == "quantity":
+            lines.append(f"Group pantry now has {r.get('quantity')} {name}.")
+        elif action == "updated":
+            lines.append(f"Set {name} to {r.get('quantity')} in the group pantry.")
+        elif action == "removed":
+            lines.append(f"Removed {name} from the group pantry.")
+        elif action == "not_found":
+            lines.append(f"I don't see {r.get('query') or name} in the group pantry.")
+        elif action == "unknown":
+            lines.append(f"I don't have '{r.get('query')}' in the catalog.")
+    if not lines:
+        return "Tell me what to put in the group pantry, like 'add milk to the pantry'."
+    return " ".join(lines)
+
+
+def _pack(ctx: CartContext, reply, source="engine", ignored=False):
+    return {"reply": reply, "cart": labeled_summary(ctx.cart, ctx.names),
+            "pantry": pantry_view(ctx.pantry), "source": source, "ignored": ignored}
+
+
+def _pantry_fallback(text, ctx: CartContext) -> dict:
+    action = parse_pantry_action(text)
+    if action is None or action[0] == "list":
+        return _pack(ctx, format_pantry_list(ctx.pantry))
+    kind, query, quantity = action
+    result = apply_pantry_action(ctx, kind, query, quantity)
+    ctx.results.append(result)
+    return _pack(ctx, format_pantry_reply([result]))
+
+
 def fallback(text, ctx: CartContext) -> dict:
+    if is_pantry_intent(text):
+        return _pantry_fallback(text, ctx)
     if is_list_intent(text) or not parse_add_queries(text):
-        summary = labeled_summary(ctx.cart, ctx.names)
-        if is_list_intent(text):
-            return {"reply": format_engine_reply([], ctx.user_name, summary),
-                    "cart": summary, "source": "engine", "ignored": False}
-        if not parse_add_queries(text):
-            return {"reply": format_engine_reply([], ctx.user_name, summary),
-                    "cart": summary, "source": "engine", "ignored": False}
+        return _pack(ctx, format_engine_reply([], ctx.user_name, labeled_summary(ctx.cart, ctx.names)))
     for q in parse_add_queries(text):
         p = resolve_product(q, ctx.products, ctx.pantry)
         if not p:
@@ -173,9 +410,7 @@ def fallback(text, ctx: CartContext) -> dict:
             continue
         ctx.cart, result = add_to_group_cart(ctx.cart, p, ctx.user_id, ctx.pantry)
         ctx.results.append(result)
-    summary = labeled_summary(ctx.cart, ctx.names)
-    return {"reply": format_engine_reply(ctx.results, ctx.user_name, summary),
-            "cart": summary, "source": "engine", "ignored": False}
+    return _pack(ctx, format_engine_reply(ctx.results, ctx.user_name, labeled_summary(ctx.cart, ctx.names)))
 
 
 def _parse_reply(text):
@@ -193,8 +428,7 @@ def _parse_reply(text):
 
 async def handle(text, ctx: CartContext) -> dict:
     if not is_grocery_intent(text):
-        return {"reply": None, "cart": labeled_summary(ctx.cart, ctx.names),
-                "source": "engine", "ignored": True}
+        return _pack(ctx, None, ignored=True)
     if not gemini.api_key():
         return fallback(text, ctx)
     msgs = [{"role": "system", "content": SYSTEM},
@@ -206,10 +440,9 @@ async def handle(text, ctx: CartContext) -> dict:
                 calls = msg.get("tool_calls") or []
                 if not calls:
                     reply = _parse_reply(msg.get("content") or "")
-                    summary = labeled_summary(ctx.cart, ctx.names)
                     if not reply:
                         return fallback(text, ctx)
-                    return {"reply": reply, "cart": summary, "source": "gemini", "ignored": False}
+                    return _pack(ctx, reply, source="gemini")
                 msgs.append({k: msg[k] for k in ("role", "content", "tool_calls") if k in msg})
                 for c in calls:
                     fn = c.get("function") or {}

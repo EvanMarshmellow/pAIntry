@@ -16,12 +16,27 @@ export function shelfOf(item: PantryItem): ShelfId {
   return 'pantry'
 }
 
-// Finished / Trashed / Move to fridge have no backend endpoints yet, so they
-// are kept for this session only. "Move to fridge" overrides shelf → fresh.
+// Rough shelf life by catalog category, so items moved from the cart into the
+// pantry land on the Fresh shelf when they spoil fast. Others get no expiry.
+const SHELF_LIFE_DAYS: Record<string, number> = { produce: 5, meat_seafood: 3, dairy_eggs: 10, bakery: 5 }
+
+export function defaultExpiry(category: string | null) {
+  const days = category ? SHELF_LIFE_DAYS[category] : undefined
+  if (days == null) return undefined
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return d.toISOString()
+}
+
+// Finished / Trashed delete on the server (DELETE /users/{id}/pantry/{item_id});
+// `removed` hides the item right away and `restore` undoes that if the delete fails.
+// Move to fridge has no endpoint, so it is session-only (overrides shelf → fresh).
 type Overrides = {
   removed: ReadonlySet<string>
   moved: Readonly<Record<string, ShelfId>>
   remove: (id: string) => void
+  // Undo a remove when the server delete fails.
+  restore: (id: string) => void
   move: (id: string, shelf: ShelfId) => void
   // Bumped after a POST so screens holding pantry data refetch.
   version: number
@@ -40,6 +55,12 @@ export function PantryProvider({ children }: { children: ReactNode }) {
       removed,
       moved,
       remove: (id) => setRemoved((prev) => new Set(prev).add(id)),
+      restore: (id) =>
+        setRemoved((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        }),
       move: (id, shelf) => setMoved((prev) => ({ ...prev, [id]: shelf })),
       version,
       refresh: () => setVersion((v) => v + 1),

@@ -23,12 +23,18 @@ export function StorageView() {
   const insets = useSafeAreaInsets()
   const [tab, setTab] = useState<Tab>('groceries')
   // Fetched here so both tabs share one copy of the pantry.
-  const pantry = useAsync(() => api.pantry(user._id), `${user._id}|${version}`)
+  const pantryKey = `${user._id}|${version}`
+  const pantry = useAsync(() => api.pantry(user._id), pantryKey)
+  const foodGroups = useAsync(() => api.pantryFoodGroups(user._id), pantryKey)
 
   return (
     <View style={styles.container}>
       <View style={styles.body}>
-        {tab === 'groceries' ? <GroceriesView pantry={pantry} /> : <NutritionView pantry={pantry.data ?? []} />}
+        {tab === 'groceries' ? (
+          <GroceriesView pantry={pantry} />
+        ) : (
+          <NutritionView pantry={pantry.data ?? []} foodGroups={foodGroups} />
+        )}
       </View>
       <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
         <Segmented options={TABS} value={tab} onChange={setTab} />

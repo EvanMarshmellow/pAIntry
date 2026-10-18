@@ -5,7 +5,7 @@ import { router } from 'expo-router'
 import { useRef, useState } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { Button, ButtonText } from '@/components/Button'
+import { Button, ButtonIcon, ButtonText } from '@/components/Button'
 import { stashReceiptPhoto } from '@/lib/receiptPhoto'
 import { colors, radius, type } from '@/theme'
 
@@ -20,11 +20,12 @@ export default function CaptureReceipt() {
     setCapturing(true)
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.85,
+        quality: 0.6,
+        base64: true,
         shutterSound: false,
       })
       if (!photo?.uri) return
-      stashReceiptPhoto(photo.uri)
+      stashReceiptPhoto({ uri: photo.uri, base64: photo.base64 ?? null, mimeType: 'image/jpeg' })
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
       router.back()
     } catch {
@@ -67,14 +68,13 @@ export default function CaptureReceipt() {
           <Ionicons name="close" size={22} color="#fff" />
         </Pressable>
         <View style={styles.frame} pointerEvents="none" />
-        <Pressable
-          onPress={snap}
-          disabled={!ready || capturing}
-          style={({ pressed }) => [styles.shutter, (!ready || capturing) && styles.shutterDisabled, pressed && styles.pressed]}
-          accessibilityLabel="Take picture"
-        >
-          <View style={styles.shutterInner} />
-        </Pressable>
+        <View style={styles.controls}>
+          <Text style={styles.hint}>Fit the whole receipt inside the frame</Text>
+          <Button onPress={snap} disabled={!ready} loading={capturing} style={styles.takeButton}>
+            <ButtonIcon name="camera" />
+            <ButtonText>Take photo</ButtonText>
+          </Button>
+        </View>
       </SafeAreaView>
     </View>
   )
@@ -100,24 +100,19 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: colors.green,
   },
-  shutter: {
-    width: 76,
-    height: 76,
+  controls: { alignSelf: 'stretch', alignItems: 'center', gap: 12, marginBottom: 16 },
+  hint: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '500',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderRadius: radius.pill,
-    borderWidth: 4,
-    borderColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
+    borderCurve: 'continuous',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    overflow: 'hidden',
   },
-  shutterInner: {
-    width: 58,
-    height: 58,
-    borderRadius: radius.pill,
-    backgroundColor: '#fff',
-  },
-  shutterDisabled: { opacity: 0.4 },
-  pressed: { opacity: 0.75 },
+  takeButton: { alignSelf: 'stretch' },
   permission: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 32, backgroundColor: colors.bg },
   permissionActions: { alignSelf: 'stretch', gap: 8, marginTop: 16 },
   center: { textAlign: 'center' },

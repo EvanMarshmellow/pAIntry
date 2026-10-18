@@ -192,19 +192,3 @@ export function demoConvince(input: { product_id?: string; barcode?: string; que
     engine: { product: productFacts, alternative: null },
   }
 }
-
-export function demoAddPantry(item: {
-  name: string
-  quantity: number
-  unit: string
-  expires_at?: string
-}): PantryItem {
-  return {
-    _id: `local-${Date.now()}`,
-    name: item.name,
-    quantity: item.quantity,
-    unit: item.unit,
-    expires_at: item.expires_at ?? null,
-    added_at: new Date().toISOString(),
-  }
-}

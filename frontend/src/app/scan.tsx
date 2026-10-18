@@ -1,17 +1,19 @@
 import Ionicons from '@expo/vector-icons/Ionicons'
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera'
 import * as Haptics from 'expo-haptics'
-import { router } from 'expo-router'
+import { router, useLocalSearchParams } from 'expo-router'
 import { useRef } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Button, ButtonText } from '@/components/Button'
+import { stashScannedBarcode } from '@/lib/scannedBarcode'
 import { colors, radius, type } from '@/theme'
 
 const BARCODE_TYPES = ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128'] as const
 
-// Wireframe: "Convince Me Card" scanning screen.
+// Wireframe: "Convince Me Card" scanning screen. `?for=pantry` returns the code to Add item instead.
 export default function Scan() {
+  const { for: purpose } = useLocalSearchParams<{ for?: string }>()
   const [permission, requestPermission] = useCameraPermissions()
   // A ref, not state: the camera fires many events per second and we only want the first.
   const scanned = useRef(false)
@@ -20,6 +22,11 @@ export default function Scan() {
     if (scanned.current) return
     scanned.current = true
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+    if (purpose === 'pantry') {
+      stashScannedBarcode(String(data))
+      router.back()
+      return
+    }
     // Use a query string so the barcode always lands on /convince (object params were dropping it).
     router.replace(`/convince?barcode=${encodeURIComponent(String(data))}`)
   }

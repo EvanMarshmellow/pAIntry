@@ -199,12 +199,78 @@ export function demoAddPantry(item: {
   unit: string
   expires_at?: string
 }): PantryItem {
-  return {
+  const row: PantryItem = {
     _id: `local-${Date.now()}`,
     name: item.name,
     quantity: item.quantity,
     unit: item.unit,
     expires_at: item.expires_at ?? null,
     added_at: new Date().toISOString(),
+  }
+  DEMO_PANTRY.push(row)
+  return row
+}
+
+export function demoRemovePantry(itemId: string): void {
+  const i = DEMO_PANTRY.findIndex((p) => p._id === itemId)
+  if (i >= 0) DEMO_PANTRY.splice(i, 1)
+}
+
+const DEMO_GROUP_KEYS = [
+  'grains',
+  'vegetables',
+  'fruits',
+  'proteins_dairy',
+  'sweets_fats',
+] as const
+
+export function demoPantryFoodGroups(): import('./types').PantryFoodGroups {
+  const targets = {
+    grains: 30,
+    vegetables: 25,
+    fruits: 20,
+    proteins_dairy: 15,
+    sweets_fats: 10,
+  }
+  const labels = {
+    grains: 'Grains',
+    vegetables: 'Vegetables',
+    fruits: 'Fruit',
+    proteins_dairy: 'Protein & Dairy',
+    sweets_fats: 'Fat & Sweet',
+  }
+  const n = Math.max(DEMO_PANTRY.length, 1)
+  const groups = Object.fromEntries(
+    DEMO_GROUP_KEYS.map((key, idx) => {
+      const pct = Math.round((100 / DEMO_GROUP_KEYS.length) * 10) / 10
+      const target = targets[key]
+      return [
+        key,
+        {
+          label: labels[key],
+          target_pct: target,
+          pct,
+          pct_calories: pct,
+          pct_servings: pct,
+          pct_grams: pct,
+          delta_from_target: pct - target,
+          calories_on_hand: n * 100 * (idx + 1),
+          grams_on_hand: n * 50,
+          serving_equiv: n,
+          status: 'ok' as const,
+        },
+      ]
+    }),
+  ) as import('./types').PantryFoodGroups['groups']
+  return {
+    user_id: 'demo',
+    primary_metric: 'calories',
+    pyramid_model: 'classic',
+    pyramid_targets: targets,
+    groups,
+    combined_produce_pct: 40,
+    combined_produce_target_pct: 45,
+    pantry_balance_hint: [],
+    assumptions: ['Offline demo mix from local pantry fixture.'],
   }
 }

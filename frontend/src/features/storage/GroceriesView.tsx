@@ -4,10 +4,11 @@ import { router } from 'expo-router'
 import { useState, type ComponentProps } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { Notice } from '@/components/Notice'
-import type { PantryItem } from '@/lib/api'
+import { api, type PantryItem } from '@/lib/api'
 import { daysUntil, EXPIRY_URGENT_DAYS, expiryLabel } from '@/lib/format'
 import { useGroupCart } from '@/lib/groupCart'
 import { shelfOf, usePantryOverrides } from '@/lib/pantry'
+import { useUser } from '@/lib/session'
 import type { AsyncState } from '@/lib/useAsync'
 import { colors, radius, shelves, type, type ShelfId } from '@/theme'
 
@@ -17,14 +18,31 @@ type Props = { pantry: AsyncState<PantryItem[]> }
 
 // Wireframes: "Storage", "Storage-Fresh product", "Storage-Pantry", "Storage-Leftover".
 export function GroceriesView({ pantry }: Props) {
-  const { removed, moved, remove, move } = usePantryOverrides()
+  const user = useUser()
+  const { moved, move, refresh } = usePantryOverrides()
   const { groupCartId } = useGroupCart()
   const [shelf, setShelf] = useState<ShelfId>('fresh')
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const tint = shelves[shelf]
 
   const visible = (pantry.data ?? []).filter(
-    (item) => !removed.has(item._id) && (moved[item._id] ?? shelfOf(item)) === shelf,
+    (item) => (moved[item._id] ?? shelfOf(item)) === shelf,
   )
+
+  async function discard(item: PantryItem) {
+    setDeleteError(null)
+    setDeletingId(item._id)
+    try {
+      await api.deletePantryItem(user._id, item._id)
+      refresh()
+      await pantry.reload()
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : 'Could not remove item')
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
@@ -65,6 +83,7 @@ export function GroceriesView({ pantry }: Props) {
         </View>
 
         <View style={[styles.panel, { backgroundColor: tint.panel }, shelf === 'fresh' && styles.panelFirst, shelf === 'leftover' && styles.panelLast]}>
+          {deleteError ? <Notice message={deleteError} onRetry={() => setDeleteError(null)} /> : null}
           {pantry.status === 'error' && !pantry.data ? (
             <Notice message={pantry.error.message} onRetry={pantry.reload} />
           ) : !pantry.data ? (
@@ -77,8 +96,9 @@ export function GroceriesView({ pantry }: Props) {
                 key={item._id}
                 item={item}
                 color={tint.card}
-                onFinished={() => remove(item._id)}
-                onTrashed={() => remove(item._id)}
+                busy={deletingId === item._id}
+                onFinished={() => void discard(item)}
+                onTrashed={() => void discard(item)}
                 onMoveToFridge={
                   shelf === 'pantry'
                     ? () => {
@@ -121,12 +141,13 @@ function ActionTile({ icon, label, footnote, ...pressable }: TileProps) {
 type ShelfItemProps = {
   item: PantryItem
   color: string
+  busy?: boolean
   onFinished: () => void
   onTrashed: () => void
   onMoveToFridge?: () => void
 }
 
-function ShelfItem({ item, color, onFinished, onTrashed, onMoveToFridge }: ShelfItemProps) {
+function ShelfItem({ item, color, busy, onFinished, onTrashed, onMoveToFridge }: ShelfItemProps) {
   const days = item.expires_at ? daysUntil(item.expires_at) : null
   const urgent = days !== null && days <= EXPIRY_URGENT_DAYS
 
@@ -142,23 +163,33 @@ function ShelfItem({ item, color, onFinished, onTrashed, onMoveToFridge }: Shelf
         ) : null}
       </View>
       <View style={styles.itemActions}>
-        <ItemAction label="Finished" onPress={onFinished} />
-        <ItemAction label="Trashed" onPress={onTrashed} />
+        {busy ? <ActivityIndicator color={colors.muted} size="small" /> : null}
+        <ItemAction label="Finished" onPress={onFinished} disabled={busy} />
+        <ItemAction label="Trashed" onPress={onTrashed} disabled={busy} />
         {onMoveToFridge ? <ItemAction label="Move to fridge" onPress={onMoveToFridge} /> : null}
       </View>
     </View>
   )
 }
 
-function ItemAction({ label, onPress }: { label: string; onPress: () => void }) {
+function ItemAction({
+  label,
+  onPress,
+  disabled,
+}: {
+  label: string
+  onPress: () => void
+  disabled?: boolean
+}) {
   return (
     <Pressable
+      disabled={disabled}
       onPress={() => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
         onPress()
       }}
       hitSlop={6}
-      style={({ pressed }) => pressed && styles.pressed}
+      style={({ pressed }) => (pressed && !disabled ? styles.pressed : undefined)}
     >
       <Text style={styles.itemActionText}>{label}</Text>
     </Pressable>

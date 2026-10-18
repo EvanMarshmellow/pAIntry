@@ -16,14 +16,12 @@ export function shelfOf(item: PantryItem): ShelfId {
   return 'pantry'
 }
 
-// Finished / Trashed / Move to fridge have no backend endpoints yet, so they
-// are kept for this session only. "Move to fridge" overrides shelf → fresh.
+// Finished / Trashed call DELETE /users/{id}/pantry/{item_id}, then refresh().
+// "Move to fridge" is still session-only (overrides shelf → fresh).
 type Overrides = {
-  removed: ReadonlySet<string>
   moved: Readonly<Record<string, ShelfId>>
-  remove: (id: string) => void
   move: (id: string, shelf: ShelfId) => void
-  // Bumped after a POST so screens holding pantry data refetch.
+  // Bumped after pantry POST/DELETE so lists and nutrition refetch.
   version: number
   refresh: () => void
 }
@@ -31,20 +29,17 @@ type Overrides = {
 const PantryContext = createContext<Overrides | null>(null)
 
 export function PantryProvider({ children }: { children: ReactNode }) {
-  const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set())
   const [moved, setMoved] = useState<Readonly<Record<string, ShelfId>>>({})
   const [version, setVersion] = useState(0)
 
   const value = useMemo<Overrides>(
     () => ({
-      removed,
       moved,
-      remove: (id) => setRemoved((prev) => new Set(prev).add(id)),
       move: (id, shelf) => setMoved((prev) => ({ ...prev, [id]: shelf })),
       version,
       refresh: () => setVersion((v) => v + 1),
     }),
-    [removed, moved, version],
+    [moved, version],
   )
 
   return <PantryContext value={value}>{children}</PantryContext>

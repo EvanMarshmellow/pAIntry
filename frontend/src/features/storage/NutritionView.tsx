@@ -1,26 +1,40 @@
 import Ionicons from '@expo/vector-icons/Ionicons'
 import type { ComponentProps, ReactNode } from 'react'
-import { ScrollView, StyleSheet, Text, View } from 'react-native'
-import { api, type PantryItem } from '@/lib/api'
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Notice } from '@/components/Notice'
+import { api, type PantryFoodGroups, type PantryItem } from '@/lib/api'
 import { useCart } from '@/lib/cart'
 import { daysUntil, EXPIRY_URGENT_DAYS, expiryLabel, formatPrice } from '@/lib/format'
-import { usePantryOverrides } from '@/lib/pantry'
 import { useUser } from '@/lib/session'
+import type { AsyncState } from '@/lib/useAsync'
 import { useAsync } from '@/lib/useAsync'
 import { colors, radius, type } from '@/theme'
 
 const USE_SOON_DAYS = EXPIRY_URGENT_DAYS
 
-// Wireframe: "Storage-Nutrition" ([Nutrition Bar] + [Suggestion]).
-export function NutritionView({ pantry }: { pantry: PantryItem[] }) {
+const PYRAMID_ORDER = [
+  'grains',
+  'vegetables',
+  'fruits',
+  'proteins_dairy',
+  'sweets_fats',
+] as const satisfies readonly (keyof PantryFoodGroups['groups'])[]
+
+type Props = {
+  pantry: PantryItem[]
+  foodGroups: AsyncState<PantryFoodGroups>
+}
+
+export function NutritionView({ pantry, foodGroups }: Props) {
   const user = useUser()
   const cart = useCart()
-  const { removed } = usePantryOverrides()
   const savings = useAsync(() => api.savings(user._id), user._id)
 
   const weeklyProteinGoal = (user.goals.protein_g_per_day ?? 0) * 7
+  const pyramid = foodGroups.status === 'success' ? foodGroups.data : undefined
+
   const useSoon = pantry
-    .filter((i) => !removed.has(i._id) && i.expires_at && daysUntil(i.expires_at) <= USE_SOON_DAYS)
+    .filter((i) => i.expires_at && daysUntil(i.expires_at) <= USE_SOON_DAYS)
     .map((i) => ({
       id: i._id,
       name: i.name,
@@ -30,6 +44,41 @@ export function NutritionView({ pantry }: { pantry: PantryItem[] }) {
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
+      <Card icon="pie-chart-outline" title="Pantry nutrition mix">
+        {foodGroups.status === 'error' ? (
+          <Notice message={foodGroups.error.message} onRetry={foodGroups.reload} />
+        ) : !pyramid ? (
+          <ActivityIndicator color={colors.muted} />
+        ) : (
+          <>
+            <Text style={type.small}>
+              Share of calories in your pantry vs classic pyramid targets (not daily intake).
+            </Text>
+            {PYRAMID_ORDER.map((key) => {
+              const row = pyramid.groups[key]
+              return (
+                <PyramidRow
+                  key={key}
+                  label={row.label}
+                  actual={row.pct_calories}
+                  target={row.target_pct}
+                  status={row.status}
+                />
+              )
+            })}
+            {pyramid.pantry_balance_hint.length > 0 ? (
+              <View style={styles.hints}>
+                {pyramid.pantry_balance_hint.map((hint) => (
+                  <Text key={hint} style={type.small}>
+                    {hint}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
+          </>
+        )}
+      </Card>
+
       <Meter
         icon="wallet-outline"
         label="Weekly budget"
@@ -91,6 +140,37 @@ export function NutritionView({ pantry }: { pantry: PantryItem[] }) {
   )
 }
 
+function PyramidRow({
+  label,
+  actual,
+  target,
+  status,
+}: {
+  label: string
+  actual: number
+  target: number
+  status: 'low' | 'ok' | 'high'
+}) {
+  const ratio = Math.min(actual / 100, 1)
+  const targetX = Math.min(target / 100, 1)
+  const barColor =
+    status === 'low' ? '#F7CAC1' : status === 'high' ? '#FFF4CC' : colors.green
+  return (
+    <View style={styles.pyramidRow}>
+      <View style={styles.pyramidHeader}>
+        <Text style={styles.pyramidLabel}>{label}</Text>
+        <Text style={type.small}>
+          {actual.toFixed(1)}% <Text style={styles.targetText}>(target {target}%)</Text>
+        </Text>
+      </View>
+      <View style={styles.track}>
+        <View style={[styles.fill, { width: `${ratio * 100}%`, backgroundColor: barColor }]} />
+        <View style={[styles.targetTick, { left: `${targetX * 100}%` }]} />
+      </View>
+    </View>
+  )
+}
+
 type IconName = ComponentProps<typeof Ionicons>['name']
 
 function Card({ icon, title, children }: { icon: IconName; title: string; children: ReactNode }) {
@@ -135,9 +215,29 @@ const styles = StyleSheet.create({
   },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   cardTitle: { fontSize: 15, fontWeight: '600', color: colors.ink },
-  track: { height: 10, borderRadius: 5, backgroundColor: colors.bg, overflow: 'hidden' },
+  track: {
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.bg,
+    overflow: 'hidden',
+    position: 'relative',
+  },
   fill: { height: '100%', borderRadius: 5, backgroundColor: colors.green },
   fillOver: { backgroundColor: '#F7CAC1' },
+  targetTick: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 2,
+    marginLeft: -1,
+    backgroundColor: colors.ink,
+    opacity: 0.35,
+  },
+  pyramidRow: { gap: 6 },
+  pyramidHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  pyramidLabel: { fontSize: 14, fontWeight: '600', color: colors.ink },
+  targetText: { color: colors.faint },
+  hints: { gap: 4, marginTop: 4 },
   bigNumber: { fontSize: 28, fontWeight: '700', color: colors.greenInk, letterSpacing: -0.5 },
   line: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   urgent: { color: colors.danger, fontWeight: '700' },

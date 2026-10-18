@@ -70,6 +70,7 @@ Docs: http://localhost:8000/docs
 | `GET` | `/users/{id}/pantry` | Sorted by `expires_at`. |
 | `GET` | `/users/{id}/pantry/food-groups` | Classic pyramid mix (calorie % primary vs 30/25/20/15/10 targets). No writes. |
 | `POST` | `/users/{id}/pantry` | Body: `name`, optional `quantity`, `unit`, `product_id`, `expires_at`. |
+| `DELETE` | `/users/{id}/pantry/{item_id}` | Remove one pantry line for that user. |
 | `GET` | `/users/{id}/savings` | Sum of `savings_ledger.amount` for that user. |
 | `POST` | `/convince-me` | Body: `user_id` plus `product_id`, `barcode`, or `query`. `log: false` (or `?log=false`) skips writes. |
 | `POST` | `/agent/message` | Group iMessage (or curl). Mutates `group_carts`. |

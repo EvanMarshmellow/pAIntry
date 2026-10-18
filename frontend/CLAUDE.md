@@ -38,7 +38,7 @@ Expo SDK 57 / React Native 0.86 / React 19 (pinned to 57 to match the App Store 
 
 ### Backend contract (`../backend/app/main.py`)
 
-These endpoints are used: `GET /users/{id}`, `GET /products`, `GET|POST /users/{id}/pantry`, `GET /users/{id}/savings`, `POST /convince-me`, `POST /users/{id}/pantry/receipt`.
+These endpoints are used: `GET /users/{id}`, `GET /products`, `GET|POST|DELETE /users/{id}/pantry`, `GET /users/{id}/pantry/food-groups`, `GET /users/{id}/savings`, `POST /convince-me`, `POST /users/{id}/pantry/receipt`.
 
 - **Receipt OCR** runs on the device: `src/lib/perceptron.ts` calls Perceptron Mk1.5 (`EXPO_PUBLIC_PERCEPTRON_API_KEY`) with the same JSON schema as `backend/app/perceptron_ocr.py`, then pushes the result to `/users/{id}/pantry/receipt` for catalog matching. Confirmed lines are saved with `POST /users/{id}/pantry`.
 - **Barcode scans** are named by Open Food Facts (`src/lib/openFoodFacts.ts`) and sent to `/convince-me` as a `query`, because the seeded catalog has fake barcodes. Unknown barcodes fall back to `barcode`, then to demo data.
@@ -53,6 +53,6 @@ These endpoints are used: `GET /users/{id}`, `GET /products`, `GET|POST /users/{
 
 - **Cart and checkout** live in `CartProvider`; checkout is a mock payment.
 - **Pantry shelf** is derived in `shelfOf()`: unit `leftover` → Leftover, expiring within 14 days → Fresh, else Pantry.
-- **Finished / Trashed / Move to fridge** are session-only overrides in `PantryProvider`.
+- **Finished / Trashed** call `DELETE /users/{id}/pantry/{item_id}` then `refresh()` so pantry and food-groups refetch. **Move to fridge** is still session-only in `PantryProvider`.
 
 When the backend adds endpoints for any of these, replace the local state rather than layering on top of it.

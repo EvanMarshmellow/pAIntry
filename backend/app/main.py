@@ -112,10 +112,24 @@ async def pantry_food_groups(user_id: str):
 
 @app.post("/users/{user_id}/pantry", status_code=201)
 async def add_pantry_item(user_id: str, item: PantryItemIn):
+    db = get_db()
+    if not await db.users.find_one({"_id": oid(user_id)}):
+        raise HTTPException(404, "User not found")
     doc = item.model_dump() | {"user_id": user_id, "added_at": datetime.now(timezone.utc)}
-    res = await get_db().pantry_items.insert_one(doc)
+    res = await db.pantry_items.insert_one(doc)
     doc["_id"] = res.inserted_id
     return clean(doc)
+
+
+@app.delete("/users/{user_id}/pantry/{item_id}")
+async def delete_pantry_item(user_id: str, item_id: str):
+    db = get_db()
+    if not await db.users.find_one({"_id": oid(user_id)}):
+        raise HTTPException(404, "User not found")
+    result = await db.pantry_items.delete_one({"_id": oid(item_id), "user_id": user_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Pantry item not found")
+    return {"deleted": True, "item_id": item_id}
 
 
 @app.get("/users/{user_id}/savings")

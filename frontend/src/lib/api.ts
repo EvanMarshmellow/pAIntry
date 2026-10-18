@@ -1,8 +1,16 @@
-import { DEMO_PANTRY, DEMO_PRODUCTS, demoAddPantry, demoConvince } from './demoData'
+import {
+  DEMO_PANTRY,
+  DEMO_PRODUCTS,
+  demoAddPantry,
+  demoConvince,
+  demoPantryFoodGroups,
+  demoRemovePantry,
+} from './demoData'
 import { lookupBarcode, searchQuery } from './openFoodFacts'
 import type {
   ConvinceInput,
   NewPantryItem,
+  PantryFoodGroups,
   PantryItem,
   Product,
   ReceiptOcr,
@@ -14,6 +22,7 @@ import type {
 export type {
   ConvinceInput,
   NewPantryItem,
+  PantryFoodGroups,
   PantryItem,
   Product,
   ReceiptLine,
@@ -94,6 +103,22 @@ export const api = {
           body: JSON.stringify(item),
         }),
       () => demoAddPantry(item),
+    ),
+  deletePantryItem: (userId: string, itemId: string) =>
+    withDemoFallback(
+      () =>
+        request<{ deleted: boolean; item_id: string }>(`/users/${userId}/pantry/${itemId}`, {
+          method: 'DELETE',
+        }),
+      () => {
+        demoRemovePantry(itemId)
+        return { deleted: true, item_id: itemId }
+      },
+    ),
+  pantryFoodGroups: (userId: string) =>
+    withDemoFallback(
+      () => request<PantryFoodGroups>(`/users/${userId}/pantry/food-groups`),
+      () => demoPantryFoodGroups(),
     ),
   savings: (_userId: string) =>
     withDemoFallback(

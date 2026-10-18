@@ -9,7 +9,7 @@ import httpx
 
 from app import gemini
 from app.grok import engine_headline, engine_reasons
-from app.engine import add_to_personal_list, analyze, resolve_product
+from app.engine import add_to_group_cart, add_to_personal_list, analyze, resolve_product
 
 log = logging.getLogger("uvicorn.error")
 
@@ -67,8 +67,8 @@ def match_ocr_lines(ocr: dict, products: list) -> list[dict]:
     return lines
 
 
-def new_session(user_id: str, space_id: str, ocr: dict, lines: list[dict]) -> dict:
-    return {
+def new_session(user_id: str, space_id: str, ocr: dict, lines: list[dict], owner: dict | None = None) -> dict:
+    session = {
         "user_id": user_id,
         "space_id": space_id,
         "state": STATE_CONFIRM,
@@ -78,24 +78,37 @@ def new_session(user_id: str, space_id: str, ocr: dict, lines: list[dict]) -> di
         "suggestions": [],
         "updated_at": _now(),
     }
+    if owner:
+        session["owner"] = owner
+    return session
 
 
-def pantry_docs_from_session(session: dict, user_id: str) -> list[dict]:
+def _group_owner(session: dict | None, owner: dict | None = None) -> dict | None:
+    chosen = owner if owner is not None else (session or {}).get("owner")
+    if isinstance(chosen, dict) and chosen.get("household_id"):
+        return chosen
+    return None
+
+
+def pantry_docs_from_session(session: dict, user_id: str | None = None, owner: dict | None = None) -> list[dict]:
+    """Personal docs keep user_id. Group owner docs have household_id and space_id and no user_id."""
     now = _now()
+    group = _group_owner(session, owner)
     docs = []
     for line in session.get("lines") or []:
         name = line.get("catalog_name") or line.get("ocr_name")
         if not name:
             continue
-        doc = {
-            "user_id": user_id,
-            "name": name,
-            "quantity": 1.0,
-            "unit": "item",
-            "added_at": now,
-        }
+        doc = {"name": name, "quantity": 1.0, "unit": "item", "added_at": now}
         if line.get("product_id"):
             doc["product_id"] = line["product_id"]
+        if group:
+            doc["household_id"] = group["household_id"]
+            doc["space_id"] = group.get("space_id") or session.get("space_id")
+            if group.get("added_by"):
+                doc["added_by"] = group["added_by"]
+        else:
+            doc["user_id"] = user_id if user_id is not None else session.get("user_id")
         docs.append(doc)
     return docs
 
@@ -162,6 +175,26 @@ def apply_buy(session: dict, personal_list: dict, products: list, pantry: list, 
     return personal_list, added
 
 
+def apply_group_buy(session: dict, cart: dict, products: list, pantry: list, indices: list | None, added_by):
+    """Add swap alternatives to the group shopping list. Does not touch a personal list."""
+    suggestions = session.get("suggestions") or []
+    if not suggestions:
+        return cart, []
+    if indices is None:
+        picks = suggestions
+    else:
+        picks = [s for s in suggestions if s["index"] in indices]
+    added = []
+    for s in picks:
+        alt = _product_by_id(products, s["alternative_product_id"])
+        if not alt:
+            continue
+        cart, result = add_to_group_cart(cart, alt, added_by, pantry)
+        if result.get("action") in ("added", "merged"):
+            added.append(s["alternative_name"])
+    return cart, added
+
+
 def _lines_summary(session: dict) -> str:
     parts = []
     for line in session.get("lines") or []:
@@ -194,21 +227,24 @@ def _suggestions_summary(suggestions: list) -> str:
 
 
 def engine_confirm_reply(session: dict) -> str:
+    where = "the group pantry" if _group_owner(session) else "your pantry"
     return (
         f"{_lines_summary(session)}\n\n"
-        "Reply **yes** to add these to your pantry, or **cancel**."
+        f"Reply **yes** to add these to {where}, or **cancel**."
     )
 
 
-def engine_offer_reply() -> str:
-    return "Added to your pantry. Want suggestions to improve future trips? Reply **yes** or **skip**."
+def engine_offer_reply(session: dict | None = None) -> str:
+    where = "the group pantry" if _group_owner(session) else "your pantry"
+    return f"Added to {where}. Want suggestions to improve future trips? Reply **yes** or **skip**."
 
 
-def engine_await_reply(suggestions: list) -> str:
+def engine_await_reply(suggestions: list, session: dict | None = None) -> str:
     body = _suggestions_summary(suggestions)
+    where = "the group list" if _group_owner(session) else "your shopping list"
     return (
         f"{body}\n\n"
-        "Reply **buy** to add the swaps to your shopping list, or **ignore suggestion** to keep your receipt as-is."
+        f"Reply **buy** to add the swaps to {where}, or **ignore suggestion** to keep your receipt as-is."
     )
 
 
@@ -240,7 +276,7 @@ async def start_confirm_reply(session: dict) -> tuple[str, str]:
 
 
 async def start_await_reply(session: dict) -> tuple[str, str]:
-    fallback = engine_await_reply(session.get("suggestions") or [])
+    fallback = engine_await_reply(session.get("suggestions") or [], session)
     facts = json.dumps({"suggestions": session.get("suggestions")}, default=str)
     return await _gemini_polish(
         "Present numbered swap suggestions using exact savings from facts. "
@@ -266,8 +302,8 @@ def handle_session_text(
             return ReceiptTurn(reply="Cancelled — send another receipt photo anytime.", session=None)
         if CONFIRM_RE.match(t):
             session = {**session, "state": STATE_OFFER, "updated_at": _now()}
-            docs = pantry_docs_from_session(session, session["user_id"])
-            return ReceiptTurn(reply=engine_offer_reply(), session=session, pantry_docs=docs)
+            docs = pantry_docs_from_session(session, session.get("user_id"))
+            return ReceiptTurn(reply=engine_offer_reply(session), session=session, pantry_docs=docs)
         return ReceiptTurn(
             reply="Reply **yes** to add these items to your pantry, or **cancel**.",
             session=session,
@@ -290,7 +326,7 @@ def handle_session_text(
                     session=None,
                 )
             return ReceiptTurn(
-                reply=engine_await_reply(suggestions),
+                reply=engine_await_reply(suggestions, session),
                 session=session,
             )
         return ReceiptTurn(

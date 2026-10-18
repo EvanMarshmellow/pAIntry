@@ -183,6 +183,102 @@ def cart_summary(cart):
             "total": total, "count": len(items)}
 
 
+# --- Group pantry (one list per iMessage group; never a user's pantry_items) ---
+
+
+def _copy_pantry(items):
+    return [dict(item) for item in items or []]
+
+
+def _names_overlap(a, b):
+    left = (a or "").strip().lower()
+    right = (b or "").strip().lower()
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
+
+
+def _find_pantry_index(items, query):
+    for i, item in enumerate(items or []):
+        if _names_overlap(query, item.get("name")):
+            return i
+    return None
+
+
+def add_group_pantry_item(items, name, quantity=1, unit="item", product_id=None, added_by=None):
+    """Name overlap increments quantity. Otherwise append a new line."""
+    out = _copy_pantry(items)
+    idx = _find_pantry_index(out, name)
+    if idx is not None:
+        line = out[idx]
+        line["quantity"] = float(line.get("quantity") or 0) + float(quantity)
+        return out, {"action": "quantity", "name": line.get("name"), "quantity": line["quantity"],
+                     "unit": line.get("unit") or unit or "item", "product_id": line.get("product_id"),
+                     "added_by": line.get("added_by")}
+    line = {"name": name, "quantity": float(quantity), "unit": unit or "item"}
+    if product_id:
+        line["product_id"] = str(product_id)
+    if added_by:
+        line["added_by"] = added_by
+    out.append(line)
+    return out, {"action": "added", **line}
+
+
+def remove_group_pantry_item(items, query):
+    out = _copy_pantry(items)
+    idx = _find_pantry_index(out, query)
+    if idx is None:
+        return out, {"action": "not_found", "query": query}
+    removed = out.pop(idx)
+    return out, {"action": "removed", "name": removed.get("name"), "query": query}
+
+
+def set_group_pantry_quantity(items, query, quantity):
+    """Set quantity. Quantity <= 0 deletes the line."""
+    out = _copy_pantry(items)
+    idx = _find_pantry_index(out, query)
+    if idx is None:
+        return out, {"action": "not_found", "query": query}
+    if float(quantity) <= 0:
+        removed = out.pop(idx)
+        return out, {"action": "removed", "name": removed.get("name"), "quantity": 0, "query": query}
+    out[idx]["quantity"] = float(quantity)
+    return out, {"action": "updated", "name": out[idx].get("name"), "quantity": out[idx]["quantity"],
+                 "query": query}
+
+
+def move_cart_line_to_group_pantry(cart, items, query, added_by):
+    """Move a group-cart line into the group pantry. No cart match still adds the query."""
+    out_cart = {
+        "items": [dict(line) for line in (cart or {}).get("items") or []],
+        "skipped": list((cart or {}).get("skipped") or []),
+    }
+    for line in out_cart["items"]:
+        line["requesters"] = list(line.get("requesters") or [])
+    matched = None
+    kept = []
+    for line in out_cart["items"]:
+        if matched is None and _names_overlap(query, line.get("name")):
+            matched = line
+            qty = int(line.get("quantity") or 1)
+            if qty > 1:
+                line["quantity"] = qty - 1
+                kept.append(line)
+        else:
+            kept.append(line)
+    out_cart["items"] = kept
+    if matched:
+        pantry, result = add_group_pantry_item(
+            items, matched.get("name") or query, quantity=1,
+            unit=matched.get("unit") or "item", product_id=matched.get("product_id"),
+            added_by=added_by)
+        result = {**result, "from_cart": True}
+    else:
+        pantry, result = add_group_pantry_item(items, (query or "").strip(), quantity=1, added_by=added_by)
+        result = {**result, "from_cart": False}
+    return out_cart, pantry, result
+
+
 # --- Personal list (solo DM; no requesters / household merge) ---
 
 

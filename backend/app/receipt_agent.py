@@ -8,6 +8,7 @@ from app.perceptron_ocr import OcrError, extract_receipt_items
 from app.receipt_flow import (
     ReceiptTurn,
     apply_buy,
+    apply_group_buy,
     handle_session_text_async,
     match_ocr_lines,
     new_session,
@@ -45,11 +46,15 @@ def _decode_image(image_base64: str) -> bytes:
         raise OcrError("invalid image encoding") from e
 
 
+def _empty_cart():
+    return {"items": [], "skipped": []}
+
+
 async def handle_receipt(
     db,
     *,
-    user: dict,
-    user_id: str,
+    user: dict | None,
+    user_id: str | None,
     space_id: str,
     text: str | None,
     image_base64: str | None,
@@ -58,11 +63,34 @@ async def handle_receipt(
     pantry: list,
     week_spent: float,
     personal_list: dict | None,
+    scope: str = "user",
+    household_id: str | None = None,
+    added_by: str | None = None,
+    group_cart: dict | None = None,
 ) -> dict | None:
     """
     Returns a response dict when this turn is handled by receipt flow, else None.
+
+    scope "user" writes pantry_items and personal_lists.
+    scope "group" writes group_pantry_items and the group cart. Session key is group:{space_id}.
     """
-    session = await _load_session(db, user_id, space_id)
+    profile = user or {}
+    group = scope == "group"
+    session_key = f"group:{space_id}" if group else user_id
+    if not session_key:
+        return None
+    owner = None
+    if group:
+        owner = {
+            "household_id": household_id,
+            "space_id": space_id,
+            "added_by": added_by or user_id,
+        }
+        if group_cart is None:
+            group_cart = _empty_cart()
+    session = await _load_session(db, session_key, space_id)
+    if group and session is not None:
+        session["owner"] = owner
 
     if image_base64:
         try:
@@ -77,8 +105,8 @@ async def handle_receipt(
                 "ignored": False,
                 "receipt": True,
             }
-        # Save the store's ZIP from the receipt so live prices use the user's nearest stores
-        if ocr.get("zip") and ocr["zip"] != user.get("zip"):
+        # Personal receipts remember the store ZIP. Group receipts do not write users.
+        if not group and user and user.get("_id") and ocr.get("zip") and ocr["zip"] != user.get("zip"):
             await db.users.update_one({"_id": user["_id"]}, {"$set": {"zip": ocr["zip"]}})
             user["zip"] = ocr["zip"]
             log.info("receipt zip saved: %s", ocr["zip"])
@@ -90,9 +118,9 @@ async def handle_receipt(
                 "ignored": False,
                 "receipt": True,
             }
-        session = new_session(user_id, space_id, ocr, lines)
+        session = new_session(session_key, space_id, ocr, lines, owner=owner)
         reply, source = await start_confirm_reply(session)
-        await _save_session(db, session, user_id, space_id)
+        await _save_session(db, session, session_key, space_id)
         out = {
             "reply": reply,
             "source": source,
@@ -100,7 +128,9 @@ async def handle_receipt(
             "receipt": True,
             "receipt_state": session.get("state"),
         }
-        if personal_list is not None:
+        if group:
+            out["cart"] = cart_summary(group_cart)
+        elif personal_list is not None:
             out["list"] = cart_summary(personal_list)
         return out
 
@@ -108,24 +138,41 @@ async def handle_receipt(
         return None
 
     turn: ReceiptTurn = await handle_session_text_async(
-        session, text, user, pantry, products, week_spent
+        session, text, profile, pantry, products, week_spent
     )
 
     if turn.pantry_docs:
-        await db.pantry_items.insert_many(turn.pantry_docs)
+        if group:
+            for doc in turn.pantry_docs:
+                doc["household_id"] = household_id
+                doc["space_id"] = space_id
+                if added_by:
+                    doc["added_by"] = added_by
+                doc.pop("user_id", None)
+            await db.group_pantry_items.insert_many(turn.pantry_docs)
+        else:
+            await db.pantry_items.insert_many(turn.pantry_docs)
         pantry = pantry + turn.pantry_docs
 
     plist = personal_list
-    if turn.purchase_swaps and plist is not None:
+    if turn.purchase_swaps and group:
+        group_cart, added = apply_group_buy(
+            session, group_cart, products, pantry, turn.buy_indices, added_by or session_key)
+        if added:
+            turn.reply = f"Added to the group list: {', '.join(added)}."
+        else:
+            turn.reply = "Nothing new added to the group list."
+        await _save_session(db, None, session_key, space_id)
+    elif turn.purchase_swaps and plist is not None:
         plist, added = apply_buy(session, plist, products, pantry, turn.buy_indices)
         if added:
             turn.reply = f"Added to your list: {', '.join(added)}."
         else:
             turn.reply = "Nothing new added to your list."
-        await _save_session(db, None, user_id, space_id)
+        await _save_session(db, None, session_key, space_id)
         personal_list = plist
     else:
-        await _save_session(db, turn.session, user_id, space_id)
+        await _save_session(db, turn.session, session_key, space_id)
 
     out = {
         "reply": turn.reply,
@@ -134,7 +181,11 @@ async def handle_receipt(
         "receipt": True,
         "receipt_state": turn.session.get("state") if turn.session else None,
     }
-    if personal_list is not None:
+    if group:
+        out["cart"] = cart_summary(group_cart)
+        if turn.purchase_swaps:
+            out["_group_cart"] = group_cart
+    elif personal_list is not None:
         out["list"] = cart_summary(personal_list)
         if turn.purchase_swaps:
             out["_personal_list"] = personal_list

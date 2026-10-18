@@ -26,7 +26,7 @@ Not implemented: Expo `app/`, Perceptron scan, voice session, nutrition-gap list
 | [backend/app/receipt_flow.py](backend/app/receipt_flow.py) | Receipt session state machine: pantry confirm → optional swap suggestions → buy / ignore. |
 | [backend/app/receipt_agent.py](backend/app/receipt_agent.py) | Wires OCR + sessions into `/agent/personal` and `/agent/message`. |
 | [backend/app/db.py](backend/app/db.py) | Motor client, database name, collection list, indexes. |
-| [backend/seed.py](backend/seed.py) | Drops every collection and inserts sample products, Maya, Alex, pantry, and household. |
+| [backend/seed.py](backend/seed.py) | Drops every collection and inserts sample products and Maya's personal pantry. Group households are created by the first `/agent/message` for a `space_id`, not by seed. |
 | [backend/test_engine.py](backend/test_engine.py) | Offline tests. No database and no API key. |
 | [backend/.env.example](backend/.env.example) | `MONGODB_URI`, `DB_NAME`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `PERCEPTRON_API_KEY`. Photon vars belong in `photon-agent/.env`. |
 | [photon-agent/index.js](photon-agent/index.js) | Spectrum webhook sidecar. Routes iMessage `dm` → `/agent/personal`, `group` → `/agent/message`. Sends the reply with `space.send()`. Does not parse groceries. |
@@ -73,11 +73,12 @@ Docs: http://localhost:8000/docs
 | `DELETE` | `/users/{id}/pantry/{item_id}` | Remove one pantry line for that user. |
 | `GET` | `/users/{id}/savings` | Sum of `savings_ledger.amount` for that user. |
 | `POST` | `/convince-me` | Body: `user_id` plus `product_id`, `barcode`, or `query`. `log: false` (or `?log=false`) skips writes. |
-| `POST` | `/agent/message` | Group iMessage (or curl). Mutates `group_carts`. |
+| `POST` | `/agent/message` | Group iMessage (or curl). Mutates that group's `group_carts` and `group_pantry_items`. |
 | `POST` | `/agent/personal` | 1:1 DM (or curl). Mutates `personal_lists`. Unknown phone gets a signup message (no Maya default). Optional `image_base64` + `image_mime_type` for receipt OCR. |
 | `POST` | `/users/{id}/pantry/receipt` | Debug receipt flow with JSON `ocr` fixture (no image). |
 | `GET` | `/users/{id}/list` | Personal shopping list summary. |
 | `GET` | `/households/{id}/cart` | Current group cart for that household. |
+| `GET` | `/households/{id}/pantry` | That group's pantry only. Does not include member `pantry_items`. |
 
 ### Convince Me
 
@@ -89,21 +90,30 @@ curl -X POST http://localhost:8000/convince-me -H "Content-Type: application/jso
 
 Expected: **Swap** to Greek Yogurt Cup Vanilla at Store B, save **$2.20**, then a `savings_ledger` row. `"peanut butter crunch"` is **Skip** because Maya is allergic to peanuts.
 
-### Group cart (`POST /agent/message`)
+### Group cart and group pantry (`POST /agent/message`)
 
-Body: `{ "space_id", "sender", "text", "message_id?" }`. `sender` is a phone (`+15555550101` Maya, `+15555550102` Alex). Unknown numbers default to Maya. First message stamps `households.space_id`.
+Body: `{ "space_id", "sender", "text", "message_id?" }`. `sender` is a phone. Unknown numbers are allowed: `user_id` in the response is null, and cart `requesters` / pantry `added_by` store the phone. Do not substitute Maya.
 
-Replies only for grocery intent (`add`, `need`, `put on the list`, `what's on the list`, `@cartwise`). Other chat returns `"ignored": true` and `"reply": null` so Photon does not send.
+The first message for a `space_id` creates a household bound to that `space_id` only. A later message in a different group creates a different household and an empty pantry. Never attach a new `space_id` to a household the sender already belongs to, and never take the first household in the database.
 
-Returns `{ "reply", "cart", "source": "gemini"|"engine", "ignored", "logged", "space_id", "user_id", "household_id" }`. Cart prices always come from the engine.
+Two stores, chosen by phrasing:
+
+- Shopping list (`group_carts`): `add`, `need`, `put on the list`, `what's on the list`. Skip only when **this group's** pantry already has a name match.
+- Group pantry (`group_pantry_items`): `add to the pantry`, `put in the pantry`, `we have`, `used`, `finished`, `move`, `remove from the pantry`. `move X to the pantry` / `we bought X` takes a list line into the group pantry (or adds it if it was not on the list). `used` / `finished` / `move X out` decrements quantity and deletes the line at 0. `we have 2 X` sets quantity.
+
+A plain `add milk` stays on the shopping list. This route never reads or writes `pantry_items`, `personal_lists`, or `users`. Personal 1:1 pantries stay on `/agent/personal`.
+
+Replies for grocery intent (list phrases above, pantry phrases, `@cartwise`). Other chat returns `"ignored": true` and `"reply": null` so Photon does not send.
+
+Returns `{ "reply", "cart", "pantry", "source": "gemini"|"engine", "ignored", "logged", "space_id", "user_id", "household_id" }`. Cart prices always come from the engine.
 
 ```powershell
-curl -X POST http://localhost:8000/agent/message -H "Content-Type: application/json" -d "{\"space_id\":\"demo\",\"sender\":\"+15555550101\",\"text\":\"add milk\"}"
+curl -X POST http://localhost:8000/agent/message -H "Content-Type: application/json" -d "{\"space_id\":\"apt\",\"sender\":\"+15555550101\",\"text\":\"add milk to the pantry\"}"
 ```
 
-Expected: Skip Whole Milk (already in pantry). Then Alex `we need hummus and chips` adds Hummus Classic and Tortilla Chips. Then Maya `add hummus` merges requesters. `what's on the list?` reads the cart.
+That writes `group_pantry_items` for `apt` only. `we need milk` then skips because the group pantry has milk. `add milk` with an empty group pantry adds Whole Milk to the group list. A second `space_id` does not see those lines. `GET /households/{id}/pantry` reads the group pantry.
 
-Gemini tools (engine JSON only): `get_pantry`, `resolve_product`, `add_cart_item`, `get_cart`. Missing key / timeout / bad JSON uses regex `add|need` parsing in [backend/app/agent.py](backend/app/agent.py).
+Gemini tools (engine JSON only): `get_pantry`, `resolve_product`, `add_cart_item`, `get_cart`, `add_pantry_item`, `set_pantry_quantity`, `remove_pantry_item`, `move_to_pantry`. Missing key / timeout / bad JSON uses regex parsing in [backend/app/agent.py](backend/app/agent.py). Pantry phrases must not fall through to `add_to_group_cart`.
 
 ### Personal DM (`POST /agent/personal`)
 
@@ -123,9 +133,9 @@ Gemini tools: `get_pantry`, `get_budget_status`, `get_expiring`, `resolve_produc
 
 Send an **image** over iMessage (Photon sidecar) or POST `image_base64` + `image_mime_type` to `/agent/personal` or `/agent/message`. Requires `PERCEPTRON_API_KEY`. Flow is stored in `receipt_sessions` (TTL 24h) per `(user_id, space_id)`:
 
-1. OCR line items → reply **yes** to add to **your** pantry (not the whole household).
+1. OCR line items → reply **yes** to add them. A 1:1 DM writes that user's `pantry_items`. A group chat writes `group_pantry_items` for that `space_id` (session key `group:{space_id}`, so anyone in the chat can confirm). Group receipts do not update `users`, `pantry_items`, or `personal_lists`.
 2. Reply **yes** or **skip** for habit suggestions (engine Swap facts on catalog-matched lines).
-3. Reply **buy** to add swap alternatives to your **personal list**, or **ignore suggestion** to finish.
+3. Reply **buy** to add swap alternatives to the personal list (DM) or the group list (group), or **ignore suggestion** to finish.
 
 While a session is open, text in that chat is handled by the receipt flow (not grocery intent regex).
 
@@ -146,9 +156,10 @@ Database name defaults to `app`. Collections in [backend/app/db.py](backend/app/
 | Collection | Used for |
 |---|---|
 | `users` | Maya (`weekly_budget` 60, `allergies` `["peanuts"]`, `phone` `+15555550101`) and Alex (`weekly_budget` 50, no allergies, `phone` `+15555550102`). |
-| `households` | One row, members Maya + Alex. `space_id` starts null; first `/agent/message` sets it. |
+| `households` | One document per group `space_id`, created on the first `/agent/message` for that chat. `members` lists registered user ids who have spoken. `phones` lists every sender, including unregistered numbers. |
 | `products` | ~49 items including **Tortilla Chips**. `prices` is `{ "Store A", "Store B", "Store C" }`. Nutrition is per serving. `barcode` is fake (`0000…`). `sample_data: true`. |
-| `pantry_items` | `user_id` is the **string** form of the user id, not an ObjectId. Household cart unions every member's pantry (Alex's is empty). |
+| `pantry_items` | Personal pantry. `user_id` is the **string** form of the user id, not an ObjectId. Group chat does not read or write this collection. |
+| `group_pantry_items` | One group's pantry, keyed by `space_id` and `household_id`. No `user_id`. |
 | `carts` | Read by `/convince-me` for spend in the last 7 days (`total`). Seed leaves this empty, so week spend is 0. |
 | `decisions` | One document per logged `/convince-me` call. |
 | `savings_ledger` | Written only when the final Convince Me verdict is Swap and `savings > 0`. |
@@ -214,6 +225,7 @@ Do **not** reuse `in_pantry()` for adds. Category match would skip "hummus" beca
 2. `pantry_name_match(product, pantry)` — pantry name in product name, or product name in pantry name. **No category.**
 3. `add_to_group_cart(cart, product, user_id, pantry)` — pantry hit → append `skipped`, do not add; same `product_id` → append requester; else insert with `cheapest()` store and price.
 4. `cart_summary(cart)` — lines, skipped, `total` (sum of cheapest prices). No equal-split math.
+5. `add_group_pantry_item`, `remove_group_pantry_item`, `set_group_pantry_quantity`, `move_cart_line_to_group_pantry` — mutate a group pantry list. They do not accept a user pantry. Pass `pantry=None` into `resolve_product` when the destination is the group pantry. The list passed into `add_to_group_cart` is the group pantry only.
 
 ## Personal list rules
 
@@ -227,7 +239,7 @@ Same name matching as group cart (`resolve_product`, `pantry_name_match`), but p
 
 Maya's pantry (days until expiry, from seed time): spinach 1, plain Greek yogurt 2, whole milk 2, chicken breast 3, bananas 4, eggs 9, cheddar 21, granola 60, rice 365, black beans 540. Items expiring within 3 days are attached in `main.py` as `expiring_soon` before Convince Me `explain()` runs. The engine itself does not compute expiry.
 
-Alex has an empty pantry. Household fridge for the group cart is the **union** (Maya's list).
+A group pantry starts empty. It is not the union of member pantries. Maya's personal pantry does not change when she, or an unknown phone, stocks the group pantry.
 
 ## Photon sidecar
 
